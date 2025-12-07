@@ -1,13 +1,14 @@
 import asyncio
 import json
 from collections import defaultdict
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
+from typing import TYPE_CHECKING, Any, Optional
 
 import redis.asyncio as aioredis
 from redis.asyncio import Redis
 from redis.asyncio.client import PubSub
 
 from core.serializers import JSONSerializer
+
 from .base import BaseBackend
 
 if TYPE_CHECKING:
@@ -66,8 +67,8 @@ class RedisBackend(BaseBackend):
         redis_url: str,
         channel_prefix: str = "ws:",
         serializer: Optional["BaseSerializer"] = None,
-        registry_expiry: Optional[int] = None,
-        group_expiry: Optional[int] = None,
+        registry_expiry: int | None = None,
+        group_expiry: int | None = None,
     ):
         self.redis_url = redis_url
         self.channel_prefix = channel_prefix
@@ -77,7 +78,7 @@ class RedisBackend(BaseBackend):
         self.redis: Redis | None = None
         self.pubsub: PubSub | None = None
         self._listener_task: asyncio.Task | None = None
-        self._pending_receives: Dict[str, List[asyncio.Future]] = defaultdict(list)
+        self._pending_receives: dict[str, list[asyncio.Future]] = defaultdict(list)
 
     async def connect(self) -> None:
         """Establish connection to Redis server.
@@ -241,7 +242,7 @@ class RedisBackend(BaseBackend):
         redis_client: Any = self.redis
         await redis_client.srem(group_key, channel)
 
-    async def group_channels(self, group: str) -> Set[str]:
+    async def group_channels(self, group: str) -> set[str]:
         """Get all channels in Redis group.
 
         Parameters
@@ -278,13 +279,13 @@ class RedisBackend(BaseBackend):
                 data = self.serializer.loads(message["data"])
 
                 # Deliver to pending receive() calls
-                if channel in self._pending_receives and self._pending_receives[channel]:
+                if self._pending_receives.get(channel):
                     # Pop the first pending future and set its result
                     future = self._pending_receives[channel].pop(0)
                     if not future.done():
                         future.set_result(data)
 
-    async def receive(self, channel: str, timeout: float | None = None) -> Dict[str, Any] | None:
+    async def receive(self, channel: str, timeout: float | None = None) -> dict[str, Any] | None:
         """Receive next message from Redis pub/sub channel.
 
         Parameters
@@ -312,9 +313,8 @@ class RedisBackend(BaseBackend):
         try:
             if timeout is not None:
                 return await asyncio.wait_for(future, timeout=timeout)
-            else:
-                return await future
-        except (TimeoutError, asyncio.TimeoutError):
+            return await future
+        except TimeoutError:
             if future in self._pending_receives[channel]:
                 self._pending_receives[channel].remove(future)
             return None
@@ -444,7 +444,7 @@ class RedisBackend(BaseBackend):
         if user_id:
             await redis_client.srem(self._registry_key("user", user_id), connection_id)
 
-    async def registry_update_groups(self, connection_id: str, groups: Set[str]) -> None:
+    async def registry_update_groups(self, connection_id: str, groups: set[str]) -> None:
         """Update groups for connection in Redis registry.
 
         Parameters

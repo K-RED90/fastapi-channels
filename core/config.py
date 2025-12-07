@@ -69,10 +69,13 @@ class Settings(BaseSettings):
     Settings are loaded from environment variables with case-sensitive matching.
     Use a .env file in the project root for local development.
     """
+
     BACKEND_TYPE: Literal["memory", "redis"] = "memory"
     REDIS_URL: str = "redis://localhost:6379/0"
     REDIS_CHANNEL_PREFIX: str = "ws:"
-    REDIS_REGISTRY_EXPIRY: int | None = None  # TTL in seconds for registry keys (connections, users)
+    REDIS_REGISTRY_EXPIRY: int | None = (
+        None  # TTL in seconds for registry keys (connections, users)
+    )
     REDIS_GROUP_EXPIRY: int | None = None  # TTL in seconds for group keys
 
     WS_HEARTBEAT_INTERVAL: int = 30  # seconds

@@ -64,6 +64,7 @@ class ConnectionRegistry:
     where connections are registered on other servers. Backend limits should be used
     for global enforcement.
     """
+
     def __init__(
         self,
         max_connections: int = 10000,

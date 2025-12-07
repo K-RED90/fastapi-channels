@@ -11,9 +11,9 @@ from core.connections.registry import Connection, ConnectionRegistry
 from core.exceptions import ConnectionError
 from core.typed import ConnectionState
 
-
 if TYPE_CHECKING:
     from core.backends.base import BaseBackend
+
 
 class ConnectionManager:
     """Central manager for WebSocket connection lifecycle and messaging.
@@ -69,6 +69,7 @@ class ConnectionManager:
     Connection limits are enforced per user to prevent abuse.
     Broadcast functionality requires Redis backend support.
     """
+
     def __init__(
         self,
         registry: ConnectionRegistry,
@@ -147,7 +148,9 @@ class ConnectionManager:
                     context=context,
                 )
 
-        channel_name = await self.registry.backend.new_channel(prefix=f"ws.{user_id}" if user_id else "ws")
+        channel_name = await self.registry.backend.new_channel(
+            prefix=f"ws.{user_id}" if user_id else "ws"
+        )
 
         connection = await self.registry.register(
             websocket=websocket,

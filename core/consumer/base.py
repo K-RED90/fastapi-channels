@@ -13,9 +13,9 @@ from core.exceptions import (
 from core.middleware.base import Middleware
 from core.typed import Message, MessagePriority
 
-
 if TYPE_CHECKING:
     from core.backends.base import BaseBackend
+
 
 class BaseConsumer:
     """Abstract base class for WebSocket consumer implementations.
@@ -69,6 +69,7 @@ class BaseConsumer:
     Messages are automatically parsed from JSON and validated.
     Heartbeat messages ("pong") are handled automatically.
     """
+
     def __init__(
         self,
         connection: Connection,
@@ -99,7 +100,6 @@ class BaseConsumer:
         ValidationError
             If connection setup validation fails
         """
-        pass
 
     @abstractmethod
     async def disconnect(self, code: int) -> None:
@@ -115,7 +115,6 @@ class BaseConsumer:
         - Cleaning up connection-specific resources
         - Logging disconnection events
         """
-        pass
 
     @abstractmethod
     async def receive(self, message: Message) -> None:
@@ -140,7 +139,6 @@ class BaseConsumer:
         ValidationError
             If message content is invalid
         """
-        pass
 
     async def send(self, message: Message) -> None:
         """Send a Message object to the connected WebSocket client.

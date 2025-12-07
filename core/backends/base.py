@@ -1,7 +1,8 @@
-from abc import ABC, abstractmethod
-from typing import Any
 import asyncio
 import uuid
+from abc import ABC, abstractmethod
+from typing import Any
+
 
 class BaseBackend(ABC):
     """Abstract base class defining the protocol for WebSocket channel layer backends.
@@ -358,4 +359,3 @@ class BaseBackend(ABC):
         without explicitly managing groups. Only Redis backend supports this.
         """
         return False
-

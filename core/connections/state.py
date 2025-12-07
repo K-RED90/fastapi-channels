@@ -80,6 +80,7 @@ class Connection:
     Group memberships are tracked locally and synchronized with backend.
     Heartbeat monitoring helps detect dead connections.
     """
+
     websocket: WebSocket
     channel_name: str
     user_id: str | None = ""
