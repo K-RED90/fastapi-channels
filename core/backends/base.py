@@ -1,5 +1,5 @@
 import asyncio
-from typing import Any, Dict, Optional, Set
+from typing import Any
 
 from core.typed import BackendProtocol
 
@@ -27,8 +27,8 @@ class BaseBackend(BackendProtocol):
     """
 
     def __init__(self):
-        self.groups: Dict[str, Set[str]] = {}
-        self.subscriptions: Dict[str, Set[str]] = {}
+        self.groups: dict[str, set[str]] = {}
+        self.subscriptions: dict[str, set[str]] = {}
         self._lock = asyncio.Lock()
         self._channel_counter: int = 0
 
@@ -45,10 +45,10 @@ class BaseBackend(BackendProtocol):
                 if not self.groups[group]:
                     del self.groups[group]
 
-    def _get_group_channels(self, group: str) -> Set[str]:
+    def _get_group_channels(self, group: str) -> set[str]:
         return self.groups.get(group, set()).copy()
 
-    async def group_channels(self, group: str) -> Set[str]:
+    async def group_channels(self, group: str) -> set[str]:
         """Return copy of channels in a group."""
         async with self._lock:
             return self._get_group_channels(group)
@@ -72,27 +72,23 @@ class BaseBackend(BackendProtocol):
     async def registry_add_connection(
         self,
         connection_id: str,
-        user_id: Optional[str],
-        metadata: Dict[str, Any],
-        groups: Set[str],
+        user_id: str | None,
+        metadata: dict[str, Any],
+        groups: set[str],
         heartbeat_timeout: float,
     ) -> None:
         """Add connection to registry with metadata (override in subclasses)."""
         raise NotImplementedError
 
-    async def registry_remove_connection(
-        self, connection_id: str, user_id: Optional[str]
-    ) -> None:
+    async def registry_remove_connection(self, connection_id: str, user_id: str | None) -> None:
         """Remove connection from registry (override in subclasses)."""
         raise NotImplementedError
 
-    async def registry_update_groups(
-        self, connection_id: str, groups: Set[str]
-    ) -> None:
+    async def registry_update_groups(self, connection_id: str, groups: set[str]) -> None:
         """Update groups for a connection (override in subclasses)."""
         raise NotImplementedError
 
-    async def registry_get_connection_groups(self, connection_id: str) -> Set[str]:
+    async def registry_get_connection_groups(self, connection_id: str) -> set[str]:
         """Get groups for a connection (override in subclasses)."""
         raise NotImplementedError
 
@@ -100,7 +96,7 @@ class BaseBackend(BackendProtocol):
         """Count total connections in registry (override in subclasses)."""
         raise NotImplementedError
 
-    async def registry_get_user_connections(self, user_id: str) -> Set[str]:
+    async def registry_get_user_connections(self, user_id: str) -> set[str]:
         """Get all connection IDs for a user (override in subclasses)."""
         raise NotImplementedError
 

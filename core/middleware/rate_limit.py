@@ -1,10 +1,8 @@
 import logging
 import time
-from typing import Dict, Tuple
 
-from core.middleware.base import Middleware
 from core.exceptions import RateLimitError
-from core.config import Settings
+from core.middleware.base import Middleware
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +14,7 @@ class TokenBucketRateLimiter:
         self.rate = rate
         self.window = window_seconds
         self.burst = burst_size
-        self.buckets: Dict[str, Tuple[float, int]] = {}
+        self.buckets: dict[str, tuple[float, int]] = {}
 
     def allow(self, key: str) -> bool:
         now = time.time()
@@ -41,13 +39,19 @@ class TokenBucketRateLimiter:
 class RateLimitMiddleware(Middleware):
     """Apply token bucket rate limiting to messages."""
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        settings = Settings()
-        self.enabled = bool(getattr(settings, "RATE_LIMIT_ENABLED", False))
-        self.messages_per_window = int(getattr(settings, "RATE_LIMIT_MESSAGES", 100))
-        self.window_seconds = int(getattr(settings, "RATE_LIMIT_WINDOW", 60))
-        self.burst_size = int(getattr(settings, "RATE_LIMIT_BURST", self.messages_per_window))
+    def __init__(
+        self,
+        next_middleware: Middleware | None = None,
+        enabled: bool = False,
+        messages_per_window: int = 100,
+        window_seconds: int = 60,
+        burst_size: int = 100,
+    ):
+        super().__init__(next_middleware)
+        self.enabled = enabled
+        self.messages_per_window = messages_per_window
+        self.window_seconds = window_seconds
+        self.burst_size = burst_size
         self.limiter = TokenBucketRateLimiter(
             rate=self.messages_per_window,
             window_seconds=self.window_seconds,
@@ -64,9 +68,10 @@ class RateLimitMiddleware(Middleware):
         key = getattr(connection, "channel_name", None) or getattr(connection, "id", "unknown")
         if not self.limiter.allow(key):
             from core.exceptions import create_error_context
+
             context = create_error_context(
-                user_id=getattr(connection, 'user_id', None),
-                connection_id=getattr(connection, 'channel_name', None),
+                user_id=connection.user_id,
+                connection_id=connection.channel_name,
                 message_type=message.type,
                 component="rate_limit_middleware",
                 rate_limit_key=key,

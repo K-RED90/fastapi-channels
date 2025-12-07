@@ -1,12 +1,13 @@
 import json
+
+from core.exceptions import ValidationError, create_error_context
 from core.middleware.base import Middleware
 from core.typed import Message
-from core.exceptions import ValidationError, create_error_context
 
 
 class ValidationMiddleware(Middleware):
-    def __init__(self, max_message_size: int, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, max_message_size: int, next_middleware: Middleware | None = None):
+        super().__init__(next_middleware)
         self.max_message_size = max_message_size
 
     async def process(self, message: Message, connection, consumer) -> Message | None:
@@ -14,8 +15,8 @@ class ValidationMiddleware(Middleware):
             size = len(json.dumps(message.to_dict()))
             if size > self.max_message_size:
                 context = create_error_context(
-                    user_id=getattr(connection, "user_id", None),
-                    connection_id=getattr(connection, "channel_name", None),
+                    user_id=connection.user_id,
+                    connection_id=connection.channel_name,
                     message_type=message.type,
                     component="validation_middleware",
                     message_size=size,
@@ -29,14 +30,14 @@ class ValidationMiddleware(Middleware):
             raise
         except Exception as exc:
             context = create_error_context(
-                user_id=getattr(connection, "user_id", None),
-                connection_id=getattr(connection, "channel_name", None),
+                user_id=connection.user_id,
+                connection_id=connection.channel_name,
                 message_type=message.type,
                 component="validation_middleware",
                 original_error=str(exc),
             )
             raise ValidationError(
-                f"Validation failed: {str(exc)}",
+                f"Validation failed: {exc!s}",
                 context=context,
             )
 

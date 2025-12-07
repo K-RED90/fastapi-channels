@@ -1,9 +1,11 @@
 from core.middleware.base import Middleware
-from core.middleware.validation import ValidationMiddleware
 from core.middleware.logging import LoggingMiddleware
+from core.middleware.rate_limit import RateLimitMiddleware
+from core.middleware.validation import ValidationMiddleware
 
 __all__ = [
-    "Middleware",
-    "ValidationMiddleware",
     "LoggingMiddleware",
+    "Middleware",
+    "RateLimitMiddleware",
+    "ValidationMiddleware",
 ]

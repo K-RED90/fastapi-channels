@@ -1,6 +1,6 @@
-from collections import defaultdict
 import asyncio
-from typing import Any, Dict, Optional, Set
+from collections import defaultdict
+from typing import Any
 
 from core.backends.base import BaseBackend
 
@@ -10,14 +10,13 @@ class MemoryBackend(BaseBackend):
 
     def __init__(self):
         super().__init__()
-        self.channels: Dict[str, asyncio.Queue] = {}
-        self.listeners: Dict[str, Set[asyncio.Queue]] = defaultdict(set)
-        # Registry storage
-        self._registry_connections: Set[str] = set()
-        self._registry_connection_data: Dict[str, Dict[str, Any]] = {}
-        self._registry_user_connections: Dict[str, Set[str]] = defaultdict(set)
+        self.channels: dict[str, asyncio.Queue] = {}
+        self.listeners: dict[str, set[asyncio.Queue]] = defaultdict(set)
+        self._registry_connections: set[str] = set()
+        self._registry_connection_data: dict[str, dict[str, Any]] = {}
+        self._registry_user_connections: dict[str, set[str]] = defaultdict(set)
 
-    async def publish(self, channel: str, message: Dict[str, Any]) -> None:
+    async def publish(self, channel: str, message: dict[str, Any]) -> None:
         """Publish message to all subscribers of a channel"""
         if channel in self.listeners:
             for queue in self.listeners[channel].copy():
@@ -38,7 +37,7 @@ class MemoryBackend(BaseBackend):
             self.listeners[channel].discard(queue)
             del self.channels[channel]
 
-    async def group_send(self, group: str, message: Dict[str, Any]) -> None:
+    async def group_send(self, group: str, message: dict[str, Any]) -> None:
         """Send message to all channels in a group"""
         channels = self._get_group_channels(group)
         if not channels:
@@ -72,16 +71,14 @@ class MemoryBackend(BaseBackend):
 
     async def get_message(
         self, channel: str, timeout: float | None = None
-    ) -> Dict[str, Any] | None:
+    ) -> dict[str, Any] | None:
         """Get next message from channel"""
         if channel not in self.channels:
             return None
 
         return await asyncio.wait_for(self.channels[channel].get(), timeout=timeout)
 
-    async def receive(
-        self, channel: str, timeout: float | None = None
-    ) -> Dict[str, Any] | None:
+    async def receive(self, channel: str, timeout: float | None = None) -> dict[str, Any] | None:
         """Alias for get_message to match backend interface."""
         return await self.get_message(channel, timeout)
 
@@ -94,9 +91,9 @@ class MemoryBackend(BaseBackend):
     async def registry_add_connection(
         self,
         connection_id: str,
-        user_id: Optional[str],
-        metadata: Dict[str, Any],
-        groups: Set[str],
+        user_id: str | None,
+        metadata: dict[str, Any],
+        groups: set[str],
         heartbeat_timeout: float,
     ) -> None:
         """Add connection to registry with metadata."""
@@ -111,9 +108,7 @@ class MemoryBackend(BaseBackend):
             if user_id:
                 self._registry_user_connections[user_id].add(connection_id)
 
-    async def registry_remove_connection(
-        self, connection_id: str, user_id: Optional[str]
-    ) -> None:
+    async def registry_remove_connection(self, connection_id: str, user_id: str | None) -> None:
         """Remove connection from registry."""
         async with self._lock:
             self._registry_connections.discard(connection_id)
@@ -123,15 +118,13 @@ class MemoryBackend(BaseBackend):
                 if not self._registry_user_connections[user_id]:
                     del self._registry_user_connections[user_id]
 
-    async def registry_update_groups(
-        self, connection_id: str, groups: Set[str]
-    ) -> None:
+    async def registry_update_groups(self, connection_id: str, groups: set[str]) -> None:
         """Update groups for a connection."""
         async with self._lock:
             if connection_id in self._registry_connection_data:
                 self._registry_connection_data[connection_id]["groups"] = groups.copy()
 
-    async def registry_get_connection_groups(self, connection_id: str) -> Set[str]:
+    async def registry_get_connection_groups(self, connection_id: str) -> set[str]:
         """Get groups for a connection."""
         async with self._lock:
             if connection_id in self._registry_connection_data:
@@ -143,7 +136,7 @@ class MemoryBackend(BaseBackend):
         async with self._lock:
             return len(self._registry_connections)
 
-    async def registry_get_user_connections(self, user_id: str) -> Set[str]:
+    async def registry_get_user_connections(self, user_id: str) -> set[str]:
         """Get all connection IDs for a user."""
         async with self._lock:
             return self._registry_user_connections.get(user_id, set()).copy()

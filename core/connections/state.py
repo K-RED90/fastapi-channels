@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Any, Dict, Optional, Set
+from typing import Any
 
 from fastapi import WebSocket
 from fastapi.websockets import WebSocketState
@@ -9,16 +9,20 @@ from core.connections.heartbeat import HeartbeatMonitor
 from core.typed import ConnectionState
 
 
+def _now() -> datetime:
+    return datetime.now(UTC)
+
+
 @dataclass
 class Connection:
     websocket: WebSocket
     channel_name: str
-    user_id: Optional[str] = ""
-    connected_at: datetime = field(default_factory=datetime.utcnow)
-    last_activity: datetime = field(default_factory=datetime.utcnow)
-    last_heartbeat: datetime = field(default_factory=datetime.utcnow)
-    groups: Set[str] = field(default_factory=set)
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    user_id: str | None = ""
+    connected_at: datetime = field(default_factory=_now)
+    last_activity: datetime = field(default_factory=_now)
+    last_heartbeat: datetime = field(default_factory=_now)
+    groups: set[str] = field(default_factory=set)
+    metadata: dict[str, Any] = field(default_factory=dict)
     message_count: int = 0
     bytes_sent: int = 0
     bytes_received: int = 0
@@ -30,7 +34,7 @@ class Connection:
 
     @property
     def now(self) -> datetime:
-        return datetime.now(UTC)
+        return _now()
 
     @property
     def is_alive(self) -> bool:
@@ -50,7 +54,6 @@ class Connection:
         return (self.now - self.connected_at).total_seconds()
 
     def update_activity(self) -> None:
-        """Refresh last activity timestamp."""
         self.last_activity = self.now
 
     def update_heartbeat(self) -> None:
@@ -59,7 +62,7 @@ class Connection:
         self.heartbeat.record_pong()
         self.update_activity()
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "channel_name": self.channel_name,
             "user_id": self.user_id,

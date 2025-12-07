@@ -1,7 +1,8 @@
 import asyncio
 import json
 from collections import defaultdict
-from typing import Any, Awaitable, Callable, Dict, Optional, Set, TYPE_CHECKING
+from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Optional
 
 import redis.asyncio as aioredis
 from redis.asyncio import Redis
@@ -19,7 +20,7 @@ class RedisBackend(BaseBackend):
         self,
         redis_url: str,
         channel_prefix: str = "ws:",
-        serializer: BaseSerializer | None = None,
+        serializer: Optional["BaseSerializer"] = None,
     ):
         super().__init__()
         self.redis_url = redis_url
@@ -27,12 +28,10 @@ class RedisBackend(BaseBackend):
         self.serializer = serializer or JSONSerializer()
         self.redis: Redis | None = None
         self.pubsub: PubSub | None = None
-        self.subscribed_channels: Set[str] = set()
-        self._subscriptions: Dict[str, asyncio.Queue] = {}
-        self._listener_task: Optional[asyncio.Task] = None
-        self._message_handlers: Dict[str, Set[Callable[[Any], Awaitable[None]]]] = (
-            defaultdict(set)
-        )
+        self.subscribed_channels: set[str] = set()
+        self._subscriptions: dict[str, asyncio.Queue] = {}
+        self._listener_task: asyncio.Task | None = None
+        self._message_handlers: dict[str, set[Callable[[Any], Awaitable[None]]]] = defaultdict(set)
 
     async def connect(self) -> None:
         self.redis = aioredis.from_url(
@@ -42,7 +41,7 @@ class RedisBackend(BaseBackend):
         )
         self.pubsub = self.redis.pubsub()
 
-    async def publish(self, channel: str, message: Dict[str, Any]) -> None:
+    async def publish(self, channel: str, message: dict[str, Any]) -> None:
         if not self.redis:
             await self.connect()
         assert self.redis is not None
@@ -73,7 +72,7 @@ class RedisBackend(BaseBackend):
         await self.pubsub.unsubscribe(full_channel)
         self.subscribed_channels.discard(channel)
 
-    async def group_send(self, group: str, message: Dict[str, Any]) -> None:
+    async def group_send(self, group: str, message: dict[str, Any]) -> None:
         if not self.redis:
             await self.connect()
         assert self.redis is not None
@@ -86,8 +85,7 @@ class RedisBackend(BaseBackend):
         await asyncio.gather(*tasks, return_exceptions=True)
 
     async def group_add(self, group: str, channel: str) -> None:
-        await super().group_add(group, channel)
-
+        """Add channel to group in Redis (no local storage)."""
         if not self.redis:
             await self.connect()
         assert self.redis is not None
@@ -97,8 +95,7 @@ class RedisBackend(BaseBackend):
         await redis_client.sadd(group_key, channel)
 
     async def group_discard(self, group: str, channel: str) -> None:
-        await super().group_discard(group, channel)
-
+        """Remove channel from group in Redis (no local storage)."""
         if not self.redis:
             return
         assert self.redis is not None
@@ -107,7 +104,7 @@ class RedisBackend(BaseBackend):
         redis_client: Any = self.redis
         await redis_client.srem(group_key, channel)
 
-    async def group_channels(self, group: str) -> Set[str]:
+    async def group_channels(self, group: str) -> set[str]:
         """Return channels for a group from Redis."""
         if not self.redis:
             await self.connect()
@@ -143,9 +140,7 @@ class RedisBackend(BaseBackend):
     def remove_message_handler(self, channel: str, handler: Callable) -> None:
         self._message_handlers[channel].discard(handler)
 
-    async def receive(
-        self, channel: str, timeout: float | None = None
-    ) -> Dict[str, Any] | None:
+    async def receive(self, channel: str, timeout: float | None = None) -> dict[str, Any] | None:
         """Receive next message for a channel via subscription."""
         if channel not in self._subscriptions:
             await self.subscribe(channel)
@@ -153,12 +148,11 @@ class RedisBackend(BaseBackend):
         queue = self._subscriptions[channel]
         try:
             return await asyncio.wait_for(queue.get(), timeout=timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return None
 
     async def flush(self) -> None:
-        """Clear redis keys and local tracking."""
-        await super().flush()
+        """Clear redis keys and local subscription tracking."""
         if self.redis:
             pattern = f"{self.channel_prefix}*"
             async for key in self.redis.scan_iter(match=pattern):
@@ -183,9 +177,9 @@ class RedisBackend(BaseBackend):
     async def registry_add_connection(
         self,
         connection_id: str,
-        user_id: Optional[str],
-        metadata: Dict[str, Any],
-        groups: Set[str],
+        user_id: str | None,
+        metadata: dict[str, Any],
+        groups: set[str],
         heartbeat_timeout: float,
     ) -> None:
         """Add connection to registry with metadata."""
@@ -207,9 +201,7 @@ class RedisBackend(BaseBackend):
         if user_id:
             await redis_client.sadd(self._registry_key("user", user_id), connection_id)
 
-    async def registry_remove_connection(
-        self, connection_id: str, user_id: Optional[str]
-    ) -> None:
+    async def registry_remove_connection(self, connection_id: str, user_id: str | None) -> None:
         """Remove connection from registry."""
         if not self.redis:
             return
@@ -221,9 +213,7 @@ class RedisBackend(BaseBackend):
         if user_id:
             await redis_client.srem(self._registry_key("user", user_id), connection_id)
 
-    async def registry_update_groups(
-        self, connection_id: str, groups: Set[str]
-    ) -> None:
+    async def registry_update_groups(self, connection_id: str, groups: set[str]) -> None:
         if not self.redis:
             await self.connect()
         assert self.redis is not None
@@ -235,7 +225,7 @@ class RedisBackend(BaseBackend):
             json.dumps(list(groups)),
         )
 
-    async def registry_get_connection_groups(self, connection_id: str) -> Set[str]:
+    async def registry_get_connection_groups(self, connection_id: str) -> set[str]:
         """Get groups for a connection."""
         if not self.redis:
             await self.connect()
@@ -261,16 +251,14 @@ class RedisBackend(BaseBackend):
         redis_client: Any = self.redis
         return int(await redis_client.scard(self._registry_key("connections")))
 
-    async def registry_get_user_connections(self, user_id: str) -> Set[str]:
+    async def registry_get_user_connections(self, user_id: str) -> set[str]:
         if not self.redis:
             await self.connect()
         assert self.redis is not None
 
         redis_client: Any = self.redis
         members = await redis_client.smembers(self._registry_key("user", user_id))
-        return {
-            m.decode() if isinstance(m, (bytes, bytearray)) else str(m) for m in members
-        }
+        return {m.decode() if isinstance(m, (bytes, bytearray)) else str(m) for m in members}
 
     def registry_get_prefix(self) -> str:
         return f"{self.channel_prefix}registry:"

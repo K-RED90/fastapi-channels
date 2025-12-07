@@ -1,6 +1,6 @@
 import asyncio
 import uuid
-from typing import Any, Dict, List, Optional, Set, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from fastapi import WebSocket
 
@@ -21,7 +21,7 @@ class ConnectionRegistry:
         heartbeat_timeout: int = 60,
         backend: "BackendProtocol | None" = None,
     ):
-        self.connections: Dict[str, Connection] = {}
+        self.connections: dict[str, Connection] = {}
         self.max_connections = max_connections
         self.heartbeat_interval = heartbeat_interval
         self.heartbeat_timeout = heartbeat_timeout
@@ -31,10 +31,10 @@ class ConnectionRegistry:
     async def register(
         self,
         websocket: WebSocket,
-        connection_id: Optional[str] = None,
-        user_id: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        heartbeat_timeout: Optional[int] = None,
+        connection_id: str | None = None,
+        user_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        heartbeat_timeout: int | None = None,
     ) -> Connection:
         async with self._lock:
             # Use backend count when available so limits consider all servers.
@@ -79,11 +79,11 @@ class ConnectionRegistry:
                 connection_id=connection_id, user_id=connection.user_id
             )
 
-    def get(self, connection_id: str) -> Optional[Connection]:
+    def get(self, connection_id: str) -> Connection | None:
         # WebSocket references only exist locally; only return local connections.
         return self.connections.get(connection_id)
 
-    def get_all(self) -> List[Connection]:
+    def get_all(self) -> list[Connection]:
         return list(self.connections.values())
 
     async def count(self) -> int:
@@ -105,10 +105,10 @@ class ConnectionRegistry:
                 connection_id=connection_id, groups=connection.groups
             )
 
-    def get_by_group(self, group: str) -> List[Connection]:
+    def get_by_group(self, group: str) -> list[Connection]:
         return [conn for conn in self.connections.values() if group in conn.groups]
 
-    async def user_channels(self, user_id: str) -> Set[str]:
+    async def user_channels(self, user_id: str) -> set[str]:
         """Return all channel names for a user across servers."""
         if not user_id:
             return set()

@@ -1,10 +1,11 @@
-from pydantic_settings import BaseSettings
 from typing import Literal
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     BACKEND_TYPE: Literal["memory", "redis"] = "memory"
-    REDIS_URL: str = "redis://localhost:6379"
+    REDIS_URL: str = "redis://localhost:6379/0"
     REDIS_CHANNEL_PREFIX: str = "ws:"
 
     WS_HEARTBEAT_INTERVAL: int = 30  # seconds
@@ -18,6 +19,4 @@ class Settings(BaseSettings):
 
     LOG_LEVEL: str = "INFO"
 
-    class Config:
-        env_file = ".env"
-        case_sensitive = True
+    model_config = SettingsConfigDict(env_file=".env", case_sensitive=True)

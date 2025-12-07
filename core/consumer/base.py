@@ -1,18 +1,18 @@
-from abc import abstractmethod
-from typing import Any, Dict, Sequence, Set
 import json
+from abc import abstractmethod
+from typing import Any
 
-from core.connections.state import Connection
 from core.backends.base import BackendProtocol
 from core.connections.manager import ConnectionManager
-from core.middleware.base import Middleware
-from core.typed import ConsumerProtocol, Message, MessagePriority
+from core.connections.state import Connection
 from core.exceptions import (
     AuthenticationError,
-    ValidationError,
     MessageError,
+    ValidationError,
     create_error_context,
 )
+from core.middleware.base import Middleware
+from core.typed import ConsumerProtocol, Message, MessagePriority
 
 
 class BaseConsumer(ConsumerProtocol):
@@ -21,13 +21,13 @@ class BaseConsumer(ConsumerProtocol):
         connection: Connection,
         manager: ConnectionManager,
         backend: BackendProtocol,
-        middleware_stacks: Sequence[Middleware] | None = None,
+        middleware_stack: Middleware | None = None,
     ):
         self.connection = connection
         self.manager = manager
         self.backend = backend
-        self.groups: Set[str] = set()
-        self.middleware_stacks = middleware_stacks or []
+        self.groups: set[str] = set()
+        self.middleware_stack = middleware_stack
 
     @abstractmethod
     async def connect(self) -> None:
@@ -44,8 +44,8 @@ class BaseConsumer(ConsumerProtocol):
     async def send(self, message: Message) -> None:
         await self.connection.websocket.send_json(message.to_dict())
 
-    async def send_json(self, data: Dict[str, Any]) -> None:
-        message = Message(type="message", data=data)
+    async def send_json(self, data: dict[str, Any]) -> None:
+        message = Message(type=data.get("type") or "message", data=data)
         await self.send(message)
 
     async def join_group(self, group: str) -> None:
@@ -56,9 +56,7 @@ class BaseConsumer(ConsumerProtocol):
         await self.manager.leave_group(self.connection.channel_name, group)
         self.groups.discard(group)
 
-    async def send_to_group(
-        self, group: str, message: Dict[str, Any] | Message
-    ) -> None:
+    async def send_to_group(self, group: str, message: dict[str, Any] | Message) -> None:
         payload = message.to_dict() if isinstance(message, Message) else message
         await self.manager.send_group(group, payload)
 
@@ -89,11 +87,10 @@ class BaseConsumer(ConsumerProtocol):
             self.connection.bytes_received += len(raw_message.encode())
             self.connection.update_activity()
 
-            if self.middleware_stacks:
-                for middleware in self.middleware_stacks:
-                    message = await middleware(message, self.connection, self)
-                    if not message:
-                        return
+            if self.middleware_stack:
+                message = await self.middleware_stack(message, self.connection, self)
+                if not message:
+                    return
 
             await self.receive(message)
 

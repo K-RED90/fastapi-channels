@@ -2,17 +2,20 @@ import logging
 
 from core.middleware.base import Middleware
 
-logger = logging.getLogger(__name__)
-
 
 class LoggingMiddleware(Middleware):
-    """Log message metadata for observability."""
+    _logger = logging.getLogger("core.middleware.logging")
+
+    def __init__(self, next_middleware: Middleware | None = None):
+        super().__init__(next_middleware)
+        if not self._logger.handlers:
+            self._logger.setLevel(logging.INFO)
 
     async def process(self, message, connection, consumer):
-        logger.debug(
+        self._logger.info(
             "ws message type=%s channel=%s user=%s",
-            getattr(message, "type", None),
-            getattr(connection, "channel_name", None),
-            getattr(connection, "user_id", None),
+            message.type,
+            connection.channel_name,
+            connection.user_id,
         )
         return message

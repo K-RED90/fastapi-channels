@@ -1,7 +1,7 @@
 [project]
 name = "agentcore"
 version = "0.1.0"
-description = "Add your description here"
+description = "WebSocket chat system with comprehensive features"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -9,4 +9,25 @@ dependencies = [
     "pydantic-settings>=2.12.0",
     "redis>=7.1.0",
     "ruff>=0.14.8",
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_classes = "Test*"
+python_functions = "test_*"
+addopts = "-v --tb=short"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "C90", "I", "N", "UP", "YTT", "S", "BLE", "FBT", "B", "A", "COM", "C4", "DTZ", "T10", "DJ", "EM", "EXE", "FA", "ISC", "ICN", "G", "INP", "PIE", "T20", "PYI", "PT", "Q", "RSE", "RET", "SLF", "SLOT", "SIM", "TID", "TCH", "INT", "ARG", "PTH", "ERA", "PD", "PGH", "PL", "TRY", "FLY", "NPY", "AIR", "PERF", "FURB", "LOG", "RUF"]
+ignore = ["S101", "S104", "COM812", "ISC001"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

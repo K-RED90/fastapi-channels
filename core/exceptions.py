@@ -1,18 +1,17 @@
 import logging
+import time
+import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, Optional
-import time
-import uuid
-
-logger = logging.getLogger(__name__)
+from typing import Any
 
 
 class ErrorCategory(Enum):
     AUTHENTICATION = "authentication"
     AUTHORIZATION = "authorization"
     VALIDATION = "validation"
+    RATE_LIMIT = "rate_limit"
     CONNECTION = "connection"
     BACKEND = "backend"
     MESSAGE = "message"
@@ -31,13 +30,13 @@ class ErrorSeverity(Enum):
 class ErrorContext:
     error_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     timestamp: float = field(default_factory=time.time)
-    user_id: Optional[str] = None
-    connection_id: Optional[str] = None
-    message_type: Optional[str] = None
-    component: Optional[str] = None
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    user_id: str | None = None
+    connection_id: str | None = None
+    message_type: str | None = None
+    component: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "error_id": self.error_id,
             "timestamp": self.timestamp,
@@ -56,10 +55,10 @@ class ErrorResponse:
     category: ErrorCategory
     severity: ErrorSeverity
     context: ErrorContext
-    details: Optional[Dict[str, Any]] = None
+    details: dict[str, Any] | None = None
     retryable: bool = False
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "type": "error",
             "error_code": self.error_code,
@@ -74,16 +73,18 @@ class ErrorResponse:
 
 
 class BaseError(Exception, ABC):
+    _logger = logging.getLogger("core.exceptions")
+
     def __init__(
         self,
         message: str,
         error_code: str,
         category: ErrorCategory,
         severity: ErrorSeverity,
-        context: Optional[ErrorContext] = None,
-        details: Optional[Dict[str, Any]] = None,
+        context: ErrorContext | None = None,
+        details: dict[str, Any] | None = None,
         retryable: bool = False,
-        cause: Optional[Exception] = None,
+        cause: Exception | None = None,
     ):
         super().__init__(message)
         self.message = message
@@ -103,7 +104,7 @@ class BaseError(Exception, ABC):
             "error_code": self.error_code,
             "category": self.category.value,
             "severity": self.severity.value,
-            "message": self.message,
+            "error_message": self.message,
             "context": self.context.to_dict(),
             "details": self.details,
             "retryable": self.retryable,
@@ -113,9 +114,9 @@ class BaseError(Exception, ABC):
             log_data["cause"] = str(self.cause)
 
         if self.severity == ErrorSeverity.CRITICAL:
-            logger.critical("Critical error occurred", extra=log_data)
+            self._logger.critical("Critical error occurred", extra=log_data)
         else:
-            logger.error("High severity error occurred", extra=log_data)
+            self._logger.error("High severity error occurred", extra=log_data)
 
     def to_response(self) -> ErrorResponse:
         return ErrorResponse(
@@ -133,7 +134,6 @@ class BaseError(Exception, ABC):
         pass
 
 
-# Legacy exception classes for backward compatibility
 class WebSocketError(BaseError):
     def __init__(self, message: str, **kwargs):
         super().__init__(
@@ -247,7 +247,26 @@ class ValidationError(BaseError):
         return False
 
 
-# New specialized error classes
+class RateLimitError(BaseError):
+    def __init__(
+        self,
+        message: str = "Rate limit exceeded",
+        error_code: str = "RATE_LIMIT_EXCEEDED",
+        **kwargs,
+    ):
+        super().__init__(
+            message=message,
+            error_code=error_code,
+            category=ErrorCategory.RATE_LIMIT,
+            severity=ErrorSeverity.LOW,
+            retryable=True,
+            **kwargs,
+        )
+
+    def should_disconnect(self) -> bool:
+        return False
+
+
 class AuthorizationError(BaseError):
     """Authorization/permission errors."""
 
@@ -314,13 +333,12 @@ class TimeoutError(BaseError):
 
 
 def create_error_context(
-    user_id: Optional[str] = None,
-    connection_id: Optional[str] = None,
-    message_type: Optional[str] = None,
-    component: Optional[str] = None,
+    user_id: str | None = None,
+    connection_id: str | None = None,
+    message_type: str | None = None,
+    component: str | None = None,
     **metadata,
 ) -> ErrorContext:
-    """Helper function to create error context."""
     return ErrorContext(
         user_id=user_id,
         connection_id=connection_id,

@@ -2,14 +2,14 @@ import asyncio
 import contextlib
 import json
 import time
-from typing import Any, Dict, Optional
+from typing import Any
 
 from fastapi import WebSocket
+from fastapi.websockets import WebSocketState
 
-from core.connections.registry import Connection, ConnectionRegistry
 from core.backends.base import BackendProtocol
+from core.connections.registry import Connection, ConnectionRegistry
 from core.exceptions import ConnectionError
-from core.middleware.logging import logger
 from core.typed import ConnectionState
 
 
@@ -24,10 +24,10 @@ class ConnectionManager:
     ):
         self.backend = backend
         self.registry = registry
-        self._receiver_tasks: Dict[str, asyncio.Task] = {}
-        self._heartbeat_task: Optional[asyncio.Task] = None
-        self._cleanup_task: Optional[asyncio.Task] = None
-        self._broadcast_task: Optional[asyncio.Task] = None
+        self._receiver_tasks: dict[str, asyncio.Task] = {}
+        self._heartbeat_task: asyncio.Task | None = None
+        self._cleanup_task: asyncio.Task | None = None
+        self._broadcast_task: asyncio.Task | None = None
         self._running = False
         self.max_connections_per_client = max_connections_per_client
         self.heartbeat_interval = heartbeat_interval
@@ -37,9 +37,9 @@ class ConnectionManager:
     async def connect(
         self,
         websocket: WebSocket,
-        user_id: Optional[str] = None,
-        connection_id: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        user_id: str | None = None,
+        connection_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> Connection:
         await websocket.accept()
 
@@ -60,9 +60,7 @@ class ConnectionManager:
                     context=context,
                 )
 
-        channel_name = await self.backend.new_channel(
-            prefix=f"ws.{user_id}" if user_id else "ws"
-        )
+        channel_name = await self.backend.new_channel(prefix=f"ws.{user_id}" if user_id else "ws")
 
         connection = await self.registry.register(
             websocket=websocket,
@@ -79,9 +77,40 @@ class ConnectionManager:
 
         return connection
 
+    async def _safe_send_json(self, connection: Connection, message: dict[str, Any]) -> bool:
+        """Safely send JSON message to websocket. Returns True if sent, False otherwise."""
+        if connection.state != ConnectionState.CONNECTED:
+            return False
+        if connection.websocket.client_state != WebSocketState.CONNECTED:
+            return False
+
+        try:
+            await connection.websocket.send_json(message)
+            payload_bytes = json.dumps(message).encode()
+            connection.message_count += 1
+            connection.bytes_sent += len(payload_bytes)
+            connection.update_activity()
+            return True
+        except RuntimeError:
+            # WebSocket already closed
+            return False
+        except Exception:
+            return False
+
+    async def _safe_close_websocket(self, connection: Connection, code: int = 1000) -> None:
+        if connection.websocket.client_state == WebSocketState.CONNECTED:
+            try:
+                await connection.websocket.close(code=code)
+            except RuntimeError:
+                pass
+
     async def disconnect(self, connection_id: str, code: int = 1000) -> None:
         connection = self.registry.get(connection_id)
         if not connection:
+            return
+
+        # Idempotent: if already disconnecting or disconnected, return early
+        if connection.state in (ConnectionState.DISCONNECTING, ConnectionState.DISCONNECTED):
             return
 
         connection.state = ConnectionState.DISCONNECTING
@@ -94,40 +123,45 @@ class ConnectionManager:
         groups_to_leave = connection.groups.copy()
         if not groups_to_leave:
             # If local groups are empty, try to restore from backend
-            groups_to_leave = await self.backend.registry_get_connection_groups(
-                connection_id
-            )
+            groups_to_leave = await self.backend.registry_get_connection_groups(connection_id)
 
         for group in groups_to_leave:
             await self.leave_group(connection_id, group)
 
         await self.backend.unsubscribe(connection_id)
 
-        await connection.websocket.close(code=code)
+        await self._safe_close_websocket(connection, code=code)
 
         await self.registry.unregister(connection_id)
         connection.state = ConnectionState.DISCONNECTED
 
-    async def send_personal(self, connection_id: str, message: Dict[str, Any]) -> None:
+    async def send_personal(self, connection_id: str, message: dict[str, Any]) -> None:
         await self.backend.publish(connection_id, message)
         if conn := self.registry.get(connection_id):
             payload_bytes = json.dumps(message).encode()
             conn.message_count += 1
             conn.bytes_sent += len(payload_bytes)
 
-    async def send_group(self, group: str, message: Dict[str, Any]) -> None:
+    async def send_group(self, group: str, message: dict[str, Any]) -> None:
         await self.backend.group_send(group, message)
 
-    async def broadcast(self, message: Dict[str, Any]) -> None:
-        # For backends that support broadcast channel, publish to shared channel; otherwise, fan-out locally.
+    async def send_group_except(
+        self, group: str, message: dict[str, Any], exclude_connection_id: str
+    ) -> None:
+        connections = self.registry.get_by_group(group)
+        tasks = [
+            self._safe_send_json(conn, message)
+            for conn in connections
+            if conn.channel_name != exclude_connection_id
+        ]
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def broadcast(self, message: dict[str, Any]) -> None:
         if self.backend.supports_broadcast_channel():
             await self.backend.publish(self._broadcast_channel, message)
         else:
-            tasks = [
-                self.send_personal(conn.channel_name, message)
-                for conn in self.registry.get_all()
-            ]
-            await asyncio.gather(*tasks)
+            tasks = [self._safe_send_json(conn, message) for conn in self.registry.get_all()]
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def join_group(self, connection_id: str, group: str) -> None:
         await self.backend.group_add(group, connection_id)
@@ -138,7 +172,6 @@ class ConnectionManager:
         await self.registry.remove_from_group(connection_id, group)
 
     async def get_user_connections(self, user_id: str) -> list[Connection]:
-        """Return active connections for a user across the cluster (local only for sockets)."""
         channels = await self.registry.user_channels(user_id)
         results: list[Connection] = []
         for ch in channels:
@@ -147,7 +180,7 @@ class ConnectionManager:
                 results.append(conn)
         return results
 
-    async def send_to_user(self, user_id: str, message: Dict[str, Any]) -> int:
+    async def send_to_user(self, user_id: str, message: dict[str, Any]) -> int:
         count = 0
         channels = await self.registry.user_channels(user_id)
         for channel in channels:
@@ -166,17 +199,18 @@ class ConnectionManager:
                 if not message:
                     continue
 
-                await connection.websocket.send_json(message)
-
-                payload_bytes = json.dumps(message).encode()
-                connection.message_count += 1
-                connection.bytes_sent += len(payload_bytes)
-                connection.update_activity()
+                if not await self._safe_send_json(connection, message):
+                    # Send failed, likely connection closed
+                    break
             except asyncio.CancelledError:
                 break
+            except TimeoutError:
+                continue
             except Exception:
-                await self.disconnect(channel_name, code=1011)
-                raise
+                # Only disconnect if not already disconnecting
+                if connection.state == ConnectionState.CONNECTED:
+                    await self.disconnect(channel_name, code=1011)
+                break
 
     async def start_tasks(self) -> None:
         if self._running:
@@ -184,16 +218,13 @@ class ConnectionManager:
         self._running = True
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
         self._cleanup_task = asyncio.create_task(self._cleanup_loop())
-        # Subscribe to broadcast channel only for backends that support it.
         if self.backend.supports_broadcast_channel():
             try:
                 await self.backend.subscribe(self._broadcast_channel)
                 self._broadcast_task = asyncio.create_task(self._broadcast_loop())
             except Exception:
-                # If subscription fails, don't start broadcast loop.
                 self._broadcast_task = None
         else:
-            # Memory backend doesn't need broadcast loop (uses local fan-out).
             self._broadcast_task = None
 
     async def stop_tasks(self) -> None:
@@ -215,15 +246,13 @@ class ConnectionManager:
                         dead.append(conn.channel_name)
                         continue
 
-                    try:
-                        await conn.websocket.send_json(
-                            {"type": "ping", "timestamp": time.time()}
-                        )
-                        conn.update_activity()
+                    if not await self._safe_send_json(
+                        conn, {"type": "ping", "timestamp": time.time()}
+                    ):
+                        dead.append(conn.channel_name)
+                    else:
                         conn.heartbeat.record_ping()
                         conn.heartbeat.increment_missed()
-                    except Exception:
-                        dead.append(conn.channel_name)
 
                 for channel in dead:
                     await self.disconnect(channel, code=1011)
@@ -238,38 +267,32 @@ class ConnectionManager:
                 total_msgs = sum(c.message_count for c in connections)
                 total_bytes = sum(c.bytes_sent + c.bytes_received for c in connections)
                 unique_users = {c.user_id for c in connections if c.user_id}
-                logger.info(
+                print(
                     f"[ws] stats connections={len(connections)} "
                     f"users={len(unique_users)} "
                     f"messages={total_msgs} bytes={total_bytes}"
                 )
             except asyncio.CancelledError:
                 break
-            except Exception as e:
-                logger.error(f"[ws] stats loop error (continuing): {e}")
+            except Exception:
                 await asyncio.sleep(60)
 
     async def _broadcast_loop(self) -> None:
-        """Listen on broadcast channel and fan-out to local connections."""
         while self._running:
             try:
-                message = await self.backend.receive(
-                    self._broadcast_channel, timeout=1
-                )
+                message = await self.backend.receive(self._broadcast_channel, timeout=1)
                 if not message:
                     continue
 
                 for conn in self.registry.get_all():
-                    try:
-                        await conn.websocket.send_json(message)
-                        payload_bytes = json.dumps(message).encode()
-                        conn.message_count += 1
-                        conn.bytes_sent += len(payload_bytes)
-                        conn.update_activity()
-                    except Exception:
-                        await self.disconnect(conn.channel_name, code=1011)
+                    if not await self._safe_send_json(conn, message):
+                        # Send failed, disconnect if still connected
+                        if conn.state == ConnectionState.CONNECTED:
+                            await self.disconnect(conn.channel_name, code=1011)
             except asyncio.CancelledError:
                 break
+            except TimeoutError:
+                # Timeout is expected - just continue the loop
+                continue
             except Exception:
-                logger.error("[ws] broadcast loop error", exc_info=True)
                 await asyncio.sleep(1)
