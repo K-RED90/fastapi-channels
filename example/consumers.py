@@ -181,8 +181,34 @@ class ChatConsumer(BaseConsumer):
         if self.database:
             room_info = self.database.get_room(room)
             if room_info is None:
-                await self.send_error(f"Room does not exist: {room}")
-                return
+                # Room doesn't exist - automatically create it as a public room
+                # This provides better UX: joining a non-existent room creates it
+                connection_id = self.connection.channel_name
+                user_id = self.connection.user_id or connection_id
+
+                # Get username from database
+                username = connection_id
+                user = self.database.get_user(user_id)
+                if user:
+                    username = user["username"]
+                else:
+                    # Create user if doesn't exist
+                    self.database.create_user(
+                        user_id=user_id,
+                        username=username,
+                        status="online",
+                        joined_at=time.time(),
+                        last_seen=time.time(),
+                    )
+
+                # Create the room
+                self.database.create_room(
+                    room_name=room,
+                    created_by=user_id,
+                    creator_username=username,
+                    is_public=True,
+                    created_at=time.time(),
+                )
         else:
             await self.send_error("Database not available")
             return
@@ -343,7 +369,42 @@ class ChatConsumer(BaseConsumer):
         if self.database:
             existing_room = self.database.get_room(room_name)
             if existing_room is not None:
-                await self.send_error("Room already exists")
+                # Room already exists - just join it instead of erroring
+                # This provides better UX: creating an existing room just joins it
+                if room_name in self.connection.groups:
+                    await self.send_error(f"Already in room: {room_name}")
+                    return
+
+                # Join the existing room
+                connection_id = self.connection.channel_name
+                user_id = self.connection.user_id or connection_id
+
+                # Get username from database
+                username = connection_id
+                user = self.database.get_user(user_id)
+                if user:
+                    username = user["username"]
+
+                # Join the room
+                await self.join_group(room_name)
+                if self.database:
+                    self.database.add_user_to_room(user_id, room_name)
+                    self.database.increment_room_user_count(room_name)
+
+                await self.send_json({"type": "room_joined", "room": room_name, "timestamp": time.time()})
+                await self.send_room_info(room_name)
+
+                # Notify others in room
+                await self.send_to_group(
+                    room_name,
+                    {
+                        "type": "user_joined_room",
+                        "user_id": user_id,
+                        "username": username,
+                        "room": room_name,
+                        "timestamp": time.time(),
+                    },
+                )
                 return
         else:
             await self.send_error("Database not available")

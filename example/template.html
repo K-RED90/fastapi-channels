@@ -404,33 +404,104 @@
             box-shadow: 0 4px 12px rgba(0,0,0,0.3);
         }
 
+        /* --- Mobile Menu Toggle --- */
+        .mobile-menu-toggle {
+            display: none;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            width: 40px;
+            height: 40px;
+            background: transparent;
+            border: none;
+            cursor: pointer;
+            padding: 8px;
+            border-radius: var(--radius-sm);
+            color: var(--text-secondary);
+            transition: all 0.2s;
+        }
+
+        .mobile-menu-toggle:hover {
+            background: rgba(255,255,255,0.05);
+            color: var(--text-primary);
+        }
+
+        .hamburger-line {
+            width: 20px;
+            height: 2px;
+            background: currentColor;
+            transition: all 0.3s;
+            margin: 2px 0;
+        }
+
+        .sidebar.show-mobile {
+            transform: translateX(0);
+        }
+
+        .sidebar.hide-mobile {
+            transform: translateX(-100%);
+        }
+
         /* --- Responsive --- */
         @media (max-width: 768px) {
             .app-container {
-                flex-direction: column;
+                position: relative;
+            }
+
+            .mobile-menu-toggle {
+                display: flex;
             }
 
             .sidebar {
-                width: 100%;
-                height: 35vh;
-                border-right: none;
-                border-bottom: 1px solid var(--border-subtle);
+                position: fixed;
+                top: 0;
+                left: 0;
+                width: 280px;
+                height: 100vh;
+                z-index: 1002;
+                transform: translateX(-100%);
+                transition: transform 0.3s ease;
+                box-shadow: var(--shadow);
+            }
+
+            .sidebar.show-mobile {
+                transform: translateX(0);
             }
 
             .chat-area {
-                height: 65vh;
+                width: 100%;
+                height: 100vh;
             }
 
             .sidebar-header {
-                padding: 12px 16px;
+                padding: 20px;
             }
 
             .sidebar-content {
-                padding: 12px 16px;
+                padding: 20px;
             }
-            
+
             .input-area {
                 padding: 12px 16px;
+            }
+        }
+
+        /* Overlay for mobile */
+        @media (max-width: 768px) {
+            .mobile-overlay {
+                display: none;
+                position: fixed;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 100%;
+                background: rgba(0,0,0,0.5);
+                z-index: 1001;
+                backdrop-filter: blur(2px);
+            }
+
+            .mobile-overlay.show {
+                display: block;
             }
         }
     </style>
@@ -438,7 +509,7 @@
 <body>
     <div class="app-container">
         <!-- Sidebar -->
-        <div class="sidebar">
+        <div class="sidebar hide-mobile">
             <div class="sidebar-header">
                 <div class="app-title">
                     <!-- Modern SVG Icon -->
@@ -476,9 +547,17 @@
             </div>
         </div>
 
+        <!-- Mobile Overlay -->
+        <div class="mobile-overlay" id="mobileOverlay"></div>
+
         <!-- Chat Area -->
         <div class="chat-area">
             <div class="chat-header">
+                <button class="mobile-menu-toggle" id="mobileMenuToggle" onclick="toggleSidebar()">
+                    <div class="hamburger-line"></div>
+                    <div class="hamburger-line"></div>
+                    <div class="hamburger-line"></div>
+                </button>
                 <div class="current-room-info">
                     <h2 id="currentRoom">
                         <svg class="room-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline></svg>
@@ -520,6 +599,7 @@
     <script>
         let ws = null;
         let currentUserId = null;
+        let currentUsername = null;
         let currentRoom = null;
         let typingTimeout = null;
         let reconnectAttempts = 0;
@@ -539,7 +619,10 @@
             usernameInput: document.getElementById('usernameInput'),
             messages: document.getElementById('messages'),
             roomNameText: document.getElementById('roomNameText'),
-            roomList: document.getElementById('roomList')
+            roomList: document.getElementById('roomList'),
+            sidebar: document.querySelector('.sidebar'),
+            mobileOverlay: document.getElementById('mobileOverlay'),
+            mobileMenuToggle: document.getElementById('mobileMenuToggle')
         };
 
         function connect() {
@@ -718,15 +801,15 @@
             switch (type) {
                 case 'welcome':
                     currentUserId = payload.user_id || message.user_id;
+                    currentUsername = payload.username || message.username || 'Guest';
                     // Only show welcome message once per session, or if more than 5 seconds have passed
                     const now = Date.now();
                     if (!hasShownWelcome || (now - lastWelcomeTime > 5000)) {
-                        const username = payload.username || message.username || 'Guest';
                         // Clear previous messages only on first connection
                         if (!hasShownWelcome && ui.messages.children.length > 0) {
                             ui.messages.innerHTML = '';
                         }
-                        addSystemMessage(`Connected as ${username}. Create or join a room to start chatting.`);
+                        addSystemMessage(`Connected as ${currentUsername}. Create or join a room to start chatting.`);
                         hasShownWelcome = true;
                         lastWelcomeTime = now;
                     }
@@ -740,18 +823,18 @@
                 case 'room_joined':
                     const roomName = payload.room || message.room;
                     currentRoom = roomName;
-                    ui.roomNameText.textContent = roomName;
+                    ui.roomNameText.textContent = `${roomName} - ${currentUsername}`;
                     ui.roomNameText.style.color = 'var(--text-primary)';
-                    
+
                     // Enable chat inputs
                     ui.msgInput.disabled = false;
                     ui.sendBtn.disabled = false;
                     ui.msgInput.focus();
-                    
+
                     // Clear messages and add header
                     ui.messages.innerHTML = '';
                     addSystemMessage(`You joined room "${roomName}"`);
-                    
+
                     updateActiveRoomInList();
                     requestRoomList();
                     fetchHistory(roomName);
@@ -859,6 +942,36 @@
         function scrollToBottom() {
             ui.messages.scrollTop = ui.messages.scrollHeight;
         }
+
+        // Mobile sidebar toggle
+        function toggleSidebar() {
+            const isMobile = window.innerWidth <= 768;
+            if (!isMobile) return;
+
+            const sidebar = ui.sidebar;
+            const overlay = ui.mobileOverlay;
+
+            if (sidebar.classList.contains('show-mobile')) {
+                // Hide sidebar
+                sidebar.classList.remove('show-mobile');
+                overlay.classList.remove('show');
+            } else {
+                // Show sidebar
+                sidebar.classList.add('show-mobile');
+                overlay.classList.add('show');
+            }
+        }
+
+        // Close sidebar when clicking overlay
+        ui.mobileOverlay.addEventListener('click', toggleSidebar);
+
+        // Close sidebar on window resize if now desktop
+        window.addEventListener('resize', () => {
+            if (window.innerWidth > 768) {
+                ui.sidebar.classList.remove('show-mobile');
+                ui.mobileOverlay.classList.remove('show');
+            }
+        });
 
         function showError(msg) {
             const container = document.getElementById('errorContainer');

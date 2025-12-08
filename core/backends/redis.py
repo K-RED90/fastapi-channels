@@ -1,6 +1,5 @@
 import asyncio
 import json
-import logging
 from collections import defaultdict
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any, Optional, TypeVar
@@ -19,7 +18,6 @@ from .base import BaseBackend
 if TYPE_CHECKING:
     from core.serializers import BaseSerializer
 
-logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
