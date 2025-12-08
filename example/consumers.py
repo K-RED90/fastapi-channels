@@ -10,31 +10,36 @@ class ChatConsumer(BaseConsumer):
 
     def __init__(self, *args, database=None, **kwargs):
         super().__init__(*args, **kwargs)
-        # In-memory storage for chat features
-        self.users: dict[str, dict[str, Any]] = {}  # user_id -> user_info
-        self.rooms: dict[str, dict[str, Any]] = {}  # room_name -> room_info
+        # Typing indicators stored in-memory per consumer instance
+        # NOTE: For production multi-server deployments, consider using Redis backend
+        # to store typing indicators for cross-server synchronization
         self.typing_users: dict[str, list[str]] = {}  # room_name -> typing user_ids
         self.max_message_history = 100
         self.max_message_length = 1000
         self.max_room_name_length = 50
-        self.database = database  # SQLite database for persistent message storage
+        self.database = database  # SQLite database for persistent message and user/room storage
 
     async def connect(self) -> None:
         """Handle connection"""
         await super().connect()
 
-        # Register user
-        user_id = self.connection.channel_name
-        username = self.connection.user_id or f"User_{user_id[:8]}"
-        self.users[user_id] = {
-            "username": username,
-            "status": "online",
-            "joined_at": time.time(),
-            "last_seen": time.time(),
-            "rooms": set(),
-        }
+        connection_id = self.connection.channel_name
+        user_id = self.connection.user_id or connection_id
+        username = self.connection.user_id or f"User_{connection_id[:8]}"
 
-        # Send welcome message with user info
+        if self.database:
+            user = self.database.get_user(user_id)
+            if user is None:
+                self.database.create_user(
+                    user_id=user_id,
+                    username=username,
+                    status="online",
+                    joined_at=time.time(),
+                    last_seen=time.time(),
+                )
+            else:
+                self.database.update_user(user_id, status="online", last_seen=time.time())
+
         await self.send_json(
             {
                 "type": "welcome",
@@ -46,20 +51,23 @@ class ChatConsumer(BaseConsumer):
         )
 
     async def disconnect(self, code: int) -> None:
-        """Handle disconnection"""
-        user_id = self.connection.channel_name
-        username = self.users.get(user_id, {}).get("username", user_id)
+        connection_id = self.connection.channel_name
+        user_id = self.connection.user_id or connection_id
 
-        # Update user status
-        if user_id in self.users:
-            self.users[user_id]["status"] = "offline"
-            self.users[user_id]["last_seen"] = time.time()
+        username = connection_id
+        if self.database:
+            user = self.database.get_user(user_id)
+            if user:
+                username = user["username"]
+                self.database.update_user(user_id, status="offline", last_seen=time.time())
+            else:
+                username = connection_id
 
-        # Notify others in all groups and clean up room counts
-        for group in self.groups.copy():
-            # Update room user count
-            if group in self.rooms:
-                self.rooms[group]["user_count"] = max(0, self.rooms[group]["user_count"] - 1)
+        for group in self.connection.groups.copy():
+            await self.leave_group(group)
+            if self.database:
+                self.database.remove_user_from_room(user_id, group)
+                self.database.decrement_room_user_count(group)
 
             await self.send_to_group(
                 group,
@@ -113,7 +121,6 @@ class ChatConsumer(BaseConsumer):
             return
         text = message.data.get("text", "").strip()
 
-        # Validate input
         if not text:
             await self.send_error("Message text is required")
             return
@@ -122,15 +129,21 @@ class ChatConsumer(BaseConsumer):
             await self.send_error(f"Message too long (max {self.max_message_length} characters)")
             return
 
-        if room not in self.groups:
+        if room not in self.connection.groups:
             await self.send_error(f"Not in room: {room}")
             return
 
-        user_id = self.connection.channel_name
-        username = self.users.get(user_id, {}).get("username", user_id)
+        connection_id = self.connection.channel_name
+        user_id = self.connection.user_id or connection_id
+
+        username = connection_id
+        if self.database:
+            user = self.database.get_user(user_id)
+            if user:
+                username = user["username"]
+
         timestamp = time.time()
 
-        # Create message object
         chat_message = {
             "type": "chat_message",
             "user_id": user_id,
@@ -140,13 +153,11 @@ class ChatConsumer(BaseConsumer):
             "timestamp": timestamp,
         }
 
-        # Save to database
         if self.database:
             self.database.save_message(
                 room=room, user_id=user_id, username=username, text=text, timestamp=timestamp
             )
 
-        # Broadcast to room
         await self.send_to_group(room, chat_message)
 
     async def handle_join_room(self, message: Message) -> None:
@@ -163,26 +174,37 @@ class ChatConsumer(BaseConsumer):
             )
             return
 
-        if room in self.groups:
+        if room in self.connection.groups:
             await self.send_error(f"Already in room: {room}")
             return
 
-        if room not in self.rooms:
-            await self.send_error(f"Room does not exist: {room}")
+        if self.database:
+            room_info = self.database.get_room(room)
+            if room_info is None:
+                await self.send_error(f"Room does not exist: {room}")
+                return
+        else:
+            await self.send_error("Database not available")
             return
 
-        user_id = self.connection.channel_name
-        username = self.users.get(user_id, {}).get("username", user_id)
+        connection_id = self.connection.channel_name
+        user_id = self.connection.user_id or connection_id
+
+        # Get username from database
+        username = connection_id
+        if self.database:
+            user = self.database.get_user(user_id)
+            if user:
+                username = user["username"]
 
         # Join the room
         await self.join_group(room)
-        self.users[user_id]["rooms"].add(room)
-        self.rooms[room]["user_count"] += 1
+        if self.database:
+            self.database.add_user_to_room(user_id, room)
+            self.database.increment_room_user_count(room)
 
-        # Send confirmation
         await self.send_json({"type": "room_joined", "room": room, "timestamp": time.time()})
 
-        # Send room info
         await self.send_room_info(room)
 
         # Notify others in room
@@ -201,19 +223,25 @@ class ChatConsumer(BaseConsumer):
         """Handle room leave request"""
         room = message.data.get("room", "").strip()
 
-        if not room or room not in self.groups:
+        if not room or room not in self.connection.groups:
             await self.send_error("Not in that room")
             return
 
-        user_id = self.connection.channel_name
-        username = self.users.get(user_id, {}).get("username", user_id)
+        connection_id = self.connection.channel_name
+        user_id = self.connection.user_id or connection_id
+
+        # Get username from database
+        username = connection_id
+        if self.database:
+            user = self.database.get_user(user_id)
+            if user:
+                username = user["username"]
 
         # Leave the room
         await self.leave_group(room)
-        if user_id in self.users:
-            self.users[user_id]["rooms"].discard(room)
-        if room in self.rooms:
-            self.rooms[room]["user_count"] = max(0, self.rooms[room]["user_count"] - 1)
+        if self.database:
+            self.database.remove_user_from_room(user_id, room)
+            self.database.decrement_room_user_count(room)
 
         # Send confirmation
         await self.send_json({"type": "room_left", "room": room, "timestamp": time.time()})
@@ -247,19 +275,31 @@ class ChatConsumer(BaseConsumer):
             await self.send_error(f"Message too long (max {self.max_message_length} characters)")
             return
 
-        if target_user_id not in self.users:
-            await self.send_error("User not found")
+        # Check if target user exists in database
+        if self.database:
+            target_user = self.database.get_user(target_user_id)
+            if target_user is None:
+                await self.send_error("User not found")
+                return
+            target_username = target_user["username"]
+        else:
+            await self.send_error("Database not available")
             return
 
-        sender_id = self.connection.channel_name
-        sender_username = self.users.get(sender_id, {}).get("username", sender_id)
-        target_username = self.users.get(target_user_id, {}).get("username", target_user_id)
+        sender_user_id = self.connection.user_id or self.connection.channel_name
+
+        # Get sender username from database
+        sender_username = self.connection.channel_name
+        if self.database:
+            sender_user = self.database.get_user(sender_user_id)
+            if sender_user:
+                sender_username = sender_user["username"]
         timestamp = time.time()
 
         # Create private message
         private_message = {
             "type": "private_message",
-            "from_user_id": sender_id,
+            "from_user_id": sender_user_id,
             "from_username": sender_username,
             "to_user_id": target_user_id,
             "to_username": target_username,
@@ -269,7 +309,7 @@ class ChatConsumer(BaseConsumer):
 
         # Send to target user (if they're online)
         try:
-            await self.manager.send_personal(target_user_id, private_message)
+            await self.manager.send_to_user(target_user_id, private_message)
         except Exception:
             await self.send_error("Failed to send private message")
 
@@ -299,27 +339,50 @@ class ChatConsumer(BaseConsumer):
             )
             return
 
-        if room_name in self.rooms:
-            await self.send_error("Room already exists")
+        # Check if room already exists
+        if self.database:
+            existing_room = self.database.get_room(room_name)
+            if existing_room is not None:
+                await self.send_error("Room already exists")
+                return
+        else:
+            await self.send_error("Database not available")
             return
 
-        user_id = self.connection.channel_name
-        username = self.users.get(user_id, {}).get("username", user_id)
+        connection_id = self.connection.channel_name
+        user_id = self.connection.user_id or connection_id
 
-        # Create room
-        self.rooms[room_name] = {
-            "name": room_name,
-            "created_at": time.time(),
-            "created_by": user_id,
-            "creator_username": username,
-            "is_public": is_public,
-            "user_count": 0,
-        }
+        # Get username from database
+        username = connection_id
+        if self.database:
+            user = self.database.get_user(user_id)
+            if user:
+                username = user["username"]
+            else:
+                # Create user if doesn't exist
+                self.database.create_user(
+                    user_id=user_id,
+                    username=username,
+                    status="online",
+                    joined_at=time.time(),
+                    last_seen=time.time(),
+                )
+
+        # Create room in database
+        if self.database:
+            self.database.create_room(
+                room_name=room_name,
+                created_by=user_id,
+                creator_username=username,
+                is_public=is_public,
+                created_at=time.time(),
+            )
 
         # Automatically join the room after creating it
         await self.join_group(room_name)
-        self.users[user_id]["rooms"].add(room_name)
-        self.rooms[room_name]["user_count"] += 1
+        if self.database:
+            self.database.add_user_to_room(user_id, room_name)
+            self.database.increment_room_user_count(room_name)
 
         # Send room created message
         await self.send_json(
@@ -339,12 +402,18 @@ class ChatConsumer(BaseConsumer):
 
     async def handle_list_rooms(self, message: Message) -> None:
         """Handle request to list available rooms"""
+        if not self.database:
+            await self.send_error("Database not available")
+            return
+
         rooms_list = []
-        for room_name, room_info in self.rooms.items():
-            if room_info["is_public"] or room_name in self.groups:
+        all_rooms = self.database.list_rooms()
+        for room_info in all_rooms:
+            # Show public rooms or rooms the user is in
+            if room_info["is_public"] or room_info["name"] in self.connection.groups:
                 rooms_list.append(
                     {
-                        "name": room_name,
+                        "name": room_info["name"],
                         "user_count": room_info["user_count"],
                         "created_by": room_info.get("creator_username", "system"),
                         "is_public": room_info["is_public"],
@@ -361,22 +430,18 @@ class ChatConsumer(BaseConsumer):
             await self.send_error("Room name is required")
             return
 
-        if room not in self.rooms:
+        if not self.database:
+            await self.send_error("Database not available")
+            return
+
+        # Check if room exists
+        room_info = self.database.get_room(room)
+        if room_info is None:
             await self.send_error("Room not found")
             return
 
-        # Get users in the room (this is a simplified version)
-        # In a real implementation, you'd track users per room
-        users_in_room = []
-        for user_id, user_info in self.users.items():
-            if room in user_info.get("rooms", set()):
-                users_in_room.append(
-                    {
-                        "user_id": user_id,
-                        "username": user_info["username"],
-                        "status": user_info["status"],
-                    }
-                )
+        # Get users in the room from database
+        users_in_room = self.database.get_room_users(room)
 
         await self.send_json(
             {"type": "room_users", "room": room, "users": users_in_room, "timestamp": time.time()}
@@ -391,7 +456,7 @@ class ChatConsumer(BaseConsumer):
             await self.send_error("Room name is required")
             return
 
-        if room not in self.groups:
+        if room not in self.connection.groups:
             await self.send_error("Not in that room")
             return
 
@@ -410,11 +475,18 @@ class ChatConsumer(BaseConsumer):
         """Handle typing start indicator"""
         room = message.data.get("room")
 
-        if not room or room not in self.groups:
+        if not room or room not in self.connection.groups:
             return  # Silently ignore invalid requests
 
-        user_id = self.connection.channel_name
-        username = self.users.get(user_id, {}).get("username", user_id)
+        connection_id = self.connection.channel_name
+        user_id = self.connection.user_id or connection_id
+
+        # Get username from database
+        username = connection_id
+        if self.database:
+            user = self.database.get_user(user_id)
+            if user:
+                username = user["username"]
 
         if room not in self.typing_users:
             self.typing_users[room] = []
@@ -438,11 +510,18 @@ class ChatConsumer(BaseConsumer):
         """Handle typing stop indicator"""
         room = message.data.get("room")
 
-        if not room or room not in self.groups:
+        if not room or room not in self.connection.groups:
             return  # Silently ignore invalid requests
 
-        user_id = self.connection.channel_name
-        username = self.users.get(user_id, {}).get("username", user_id)
+        connection_id = self.connection.channel_name
+        user_id = self.connection.user_id or connection_id
+
+        # Get username from database
+        username = connection_id
+        if self.database:
+            user = self.database.get_user(user_id)
+            if user:
+                username = user["username"]
 
         if room in self.typing_users and user_id in self.typing_users[room]:
             self.typing_users[room].remove(user_id)
@@ -478,10 +557,13 @@ class ChatConsumer(BaseConsumer):
 
     async def send_room_info(self, room: str) -> None:
         """Send room information to user"""
-        if room not in self.rooms:
+        if not self.database:
             return
 
-        room_info = self.rooms[room]
+        room_info = self.database.get_room(room)
+        if room_info is None:
+            return
+
         await self.send_json(
             {
                 "type": "room_info",

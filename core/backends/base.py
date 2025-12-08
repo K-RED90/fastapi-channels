@@ -291,6 +291,25 @@ class BaseBackend(ABC):
 
         """
 
+    async def registry_refresh_ttl(self, connection_id: str, user_id: str | None = None) -> None:
+        """Refresh TTL for connection registry keys to prevent premature expiry.
+
+        Parameters
+        ----------
+        connection_id : str
+            Connection identifier to refresh
+        user_id : str | None, optional
+            User identifier for user mapping TTL refresh. Default: None
+
+        Notes
+        -----
+        Default implementation is a no-op. Redis backend overrides this
+        to refresh TTL on registry keys. Should be called periodically
+        (e.g., on heartbeat) to keep active connections from expiring.
+
+        """
+        # No-op for backends without TTL (e.g., memory backend)
+
     @abstractmethod
     async def registry_get_connection_groups(self, connection_id: str) -> set[str]:
         """Get all groups a connection belongs to.

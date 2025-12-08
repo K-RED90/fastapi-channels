@@ -10,6 +10,7 @@ from fastapi.websockets import WebSocketState
 from core.connections.registry import Connection, ConnectionRegistry
 from core.exceptions import ConnectionError
 from core.typed import ConnectionState
+from core.utils import run_with_concurrency_limit
 
 if TYPE_CHECKING:
     from core.backends.base import BaseBackend
@@ -44,6 +45,9 @@ class ConnectionManager:
         Maximum connections per user. Default: 10000
     heartbeat_interval : int, optional
         Heartbeat ping interval in seconds. Default: 30
+    server_instance_id : str | None, optional
+        Unique identifier for this server instance. Auto-generated if not provided.
+        Used for distributed deployment tracking and debugging. Default: None
 
     Examples
     --------
@@ -68,6 +72,7 @@ class ConnectionManager:
     Background tasks must be started with start_tasks() and stopped with stop_tasks().
     Connection limits are enforced per user to prevent abuse.
     Broadcast functionality requires Redis backend support.
+    Server instance ID is automatically added to connection metadata.
 
     """
 
@@ -76,6 +81,7 @@ class ConnectionManager:
         registry: ConnectionRegistry,
         max_connections_per_client: int = 10000,
         heartbeat_interval: int = 30,
+        server_instance_id: str | None = None,
     ):
         self._registry = registry
         self._receiver_tasks: dict[str, asyncio.Task] = {}
@@ -86,6 +92,15 @@ class ConnectionManager:
         self.max_connections_per_client = max_connections_per_client
         self.heartbeat_interval = heartbeat_interval
         self._broadcast_channel = "__broadcast__"
+        # Generate server instance ID if not provided
+        self.server_instance_id = server_instance_id or self._generate_instance_id()
+
+    @staticmethod
+    def _generate_instance_id() -> str:
+        """Generate a unique server instance ID."""
+        import uuid
+
+        return f"server-{uuid.uuid4().hex[:12]}"
 
     @property
     def backend(self) -> "BaseBackend":
@@ -152,11 +167,15 @@ class ConnectionManager:
 
         channel_name = await self.backend.new_channel(prefix=f"ws.{user_id}" if user_id else "ws")
 
+        # Add server instance ID to connection metadata for distributed tracking
+        connection_metadata = metadata.copy() if metadata else {}
+        connection_metadata["server_instance_id"] = self.server_instance_id
+
         connection = await self.registry.register(
             websocket=websocket,
             connection_id=channel_name if connection_id is None else connection_id,
             user_id=user_id,
-            metadata=metadata,
+            metadata=connection_metadata,
             heartbeat_timeout=self.registry.heartbeat_timeout,
         )
 
@@ -181,7 +200,6 @@ class ConnectionManager:
             connection.update_activity()
             return True
         except RuntimeError:
-            # WebSocket already closed
             return False
         except Exception:
             return False
@@ -214,7 +232,6 @@ class ConnectionManager:
         if not connection:
             return
 
-        # Idempotent: if already disconnecting or disconnected, return early
         if connection.state in (ConnectionState.DISCONNECTING, ConnectionState.DISCONNECTED):
             return
 
@@ -224,10 +241,8 @@ class ConnectionManager:
             self._receiver_tasks[connection_id].cancel()
             del self._receiver_tasks[connection_id]
 
-        # Leave all groups - use local groups if available, otherwise query backend
         groups_to_leave = connection.groups.copy()
         if not groups_to_leave:
-            # If local groups are empty, try to restore from backend
             groups_to_leave = await self.backend.registry_get_connection_groups(connection_id)
 
         for group in groups_to_leave:
@@ -305,7 +320,7 @@ class ConnectionManager:
             for conn in connections
             if conn.channel_name != exclude_connection_id
         ]
-        await asyncio.gather(*tasks, return_exceptions=True)
+        await run_with_concurrency_limit(tasks, max_concurrent=100, return_exceptions=True)
 
     async def broadcast(self, message: dict[str, Any]) -> None:
         """Send message to all active connections.
@@ -325,7 +340,7 @@ class ConnectionManager:
             await self.backend.publish(self._broadcast_channel, message)
         else:
             tasks = [self._safe_send_json(conn, message) for conn in self.registry.get_all()]
-            await asyncio.gather(*tasks, return_exceptions=True)
+            await run_with_concurrency_limit(tasks, max_concurrent=100, return_exceptions=True)
 
     async def join_group(self, connection_id: str, group: str) -> None:
         """Add connection to a messaging group.
@@ -470,23 +485,90 @@ class ConnectionManager:
         else:
             self._broadcast_task = None
 
-    async def stop_tasks(self) -> None:
-        """Stop all background maintenance tasks.
+    async def stop_tasks(self, timeout: float = 10.0) -> None:
+        """Stop all background maintenance tasks with graceful shutdown.
 
-        Cancels and waits for heartbeat, statistics, and broadcast tasks.
-        Should be called during application shutdown.
+        Performs graceful shutdown by:
+        1. Signaling all background tasks to stop
+        2. Waiting for in-flight operations to complete (with timeout)
+        3. Closing all active connections gracefully
+        4. Cleaning up receiver tasks
+        5. Cleaning up backend resources
+
+        Parameters
+        ----------
+        timeout : float, optional
+            Maximum seconds to wait for graceful shutdown. Default: 10.0
 
         Notes
         -----
-        Ensures clean shutdown of background tasks.
+        After timeout, remaining tasks are forcefully cancelled.
+        This ensures the shutdown completes within a bounded time.
 
         """
         self._running = False
-        for task in [self._heartbeat_task, self._stats_task, self._broadcast_task]:
-            if task:
+
+        background_tasks = [
+            task
+            for task in [self._heartbeat_task, self._stats_task, self._broadcast_task]
+            if task is not None
+        ]
+
+        for task in background_tasks:
+            task.cancel()
+
+        if background_tasks:
+            _, pending = await asyncio.wait(
+                background_tasks,
+                timeout=timeout / 3,
+                return_when=asyncio.ALL_COMPLETED,
+            )
+            # Force cancel any remaining
+            for task in pending:
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
+
+        disconnect_tasks: list[asyncio.Task] = []
+        async for batch in self.registry.iter_connections(batch_size=50):
+            for conn in batch:
+                task = asyncio.create_task(
+                    self.disconnect(conn.channel_name, code=1001)  # 1001 = going away
+                )
+                disconnect_tasks.append(task)
+
+        if disconnect_tasks:
+            _, pending = await asyncio.wait(
+                disconnect_tasks,
+                timeout=timeout / 3,
+                return_when=asyncio.ALL_COMPLETED,
+            )
+            for task in pending:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+
+        receiver_tasks = list(self._receiver_tasks.values())
+        for task in receiver_tasks:
+            task.cancel()
+
+        if receiver_tasks:
+            _, pending = await asyncio.wait(
+                receiver_tasks,
+                timeout=timeout / 3,
+                return_when=asyncio.ALL_COMPLETED,
+            )
+            for task in pending:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+
+        self._receiver_tasks.clear()
+
+        try:
+            await self.backend.cleanup()
+        except Exception:
+            pass  # Best effort cleanup
 
     async def _heartbeat_loop(self) -> None:
         while self._running:
@@ -494,21 +576,37 @@ class ConnectionManager:
                 await asyncio.sleep(self.heartbeat_interval)
                 dead: list[str] = []
 
-                for conn in self.registry.get_all():
+                async def check_connection(conn: Connection) -> str | None:
+                    """Check single connection health and send ping."""
                     if not conn.is_alive:
-                        dead.append(conn.channel_name)
-                        continue
+                        return conn.channel_name
 
                     if not await self._safe_send_json(
                         conn, {"type": "ping", "timestamp": time.time()}
                     ):
-                        dead.append(conn.channel_name)
-                    else:
-                        conn.heartbeat.record_ping()
-                        conn.heartbeat.increment_missed()
+                        return conn.channel_name
+                    conn.heartbeat.record_ping()
+                    conn.heartbeat.increment_missed()
+                    try:
+                        await self.backend.registry_refresh_ttl(conn.channel_name, conn.user_id)
+                    except Exception:
+                        pass  # Best effort - don't fail heartbeat if TTL refresh fails
+                    return None
 
-                for channel in dead:
-                    await self.disconnect(channel, code=1011)
+                async for batch in self.registry.iter_connections(batch_size=100):
+                    tasks = [check_connection(conn) for conn in batch]
+                    results = await run_with_concurrency_limit(
+                        tasks, max_concurrent=50, return_exceptions=True
+                    )
+                    for result in results:
+                        if isinstance(result, str):
+                            dead.append(result)
+
+                disconnect_tasks = [self.disconnect(channel, code=1011) for channel in dead]
+                if disconnect_tasks:
+                    await run_with_concurrency_limit(
+                        disconnect_tasks, max_concurrent=50, return_exceptions=True
+                    )
             except asyncio.CancelledError:
                 break
 
@@ -516,12 +614,22 @@ class ConnectionManager:
         while self._running:
             try:
                 await asyncio.sleep(60)
-                connections = self.registry.get_all()
-                total_msgs = sum(c.message_count for c in connections)
-                total_bytes = sum(c.bytes_sent + c.bytes_received for c in connections)
-                unique_users = {c.user_id for c in connections if c.user_id}
+                total_connections = 0
+                total_msgs = 0
+                total_bytes = 0
+                unique_users: set[str] = set()
+
+                # Stream connections in batches for memory efficiency
+                async for batch in self.registry.iter_connections(batch_size=100):
+                    total_connections += len(batch)
+                    for c in batch:
+                        total_msgs += c.message_count
+                        total_bytes += c.bytes_sent + c.bytes_received
+                        if c.user_id:
+                            unique_users.add(c.user_id)
+
                 print(
-                    f"[ws] stats connections={len(connections)} "
+                    f"[ws] stats connections={total_connections} "
                     f"users={len(unique_users)} "
                     f"messages={total_msgs} bytes={total_bytes}"
                 )
@@ -537,11 +645,33 @@ class ConnectionManager:
                 if not message:
                     continue
 
-                for conn in self.registry.get_all():
-                    if not await self._safe_send_json(conn, message):
-                        # Send failed, disconnect if still connected
+                # Type narrowing: message is guaranteed to be dict[str, Any] here
+                broadcast_message: dict[str, Any] = message
+                dead: list[str] = []
+
+                async def send_to_connection(conn: Connection) -> str | None:
+                    """Send message to single connection, return channel_name if failed."""
+                    if not await self._safe_send_json(conn, broadcast_message):
                         if conn.state == ConnectionState.CONNECTED:
-                            await self.disconnect(conn.channel_name, code=1011)
+                            return conn.channel_name
+                    return None
+
+                # Process connections in batches to avoid memory spikes
+                async for batch in self.registry.iter_connections(batch_size=100):
+                    tasks = [send_to_connection(conn) for conn in batch]
+                    results = await run_with_concurrency_limit(
+                        tasks, max_concurrent=50, return_exceptions=True
+                    )
+                    for result in results:
+                        if isinstance(result, str):
+                            dead.append(result)
+
+                # Disconnect failed connections
+                disconnect_tasks = [self.disconnect(channel, code=1011) for channel in dead]
+                if disconnect_tasks:
+                    await run_with_concurrency_limit(
+                        disconnect_tasks, max_concurrent=50, return_exceptions=True
+                    )
             except asyncio.CancelledError:
                 break
             except TimeoutError:

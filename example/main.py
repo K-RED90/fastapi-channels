@@ -79,7 +79,6 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
     consumer = ChatConsumer(
         connection=connection,
         manager=manager,
-        backend=backend,
         middleware_stack=middleware,
         database=db,
     )

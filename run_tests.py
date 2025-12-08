@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""Test runner script for agentcore
-"""
+"""Test runner script for agentcore"""
 
 import subprocess
 import sys

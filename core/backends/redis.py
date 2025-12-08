@@ -1,18 +1,27 @@
 import asyncio
 import json
+import logging
 from collections import defaultdict
-from typing import TYPE_CHECKING, Any, Optional
+from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING, Any, Optional, TypeVar
 
-import redis.asyncio as aioredis
 from redis.asyncio import Redis
 from redis.asyncio.client import PubSub
+from redis.asyncio.connection import ConnectionPool
+from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from core.serializers import JSONSerializer
+from core.utils import with_retry
 
 from .base import BaseBackend
 
 if TYPE_CHECKING:
     from core.serializers import BaseSerializer
+
+logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
 
 
 class RedisBackend(BaseBackend):
@@ -28,6 +37,8 @@ class RedisBackend(BaseBackend):
     - Configurable TTL for registry keys
     - Broadcast channel support for global messaging
     - JSON/binary message serialization
+    - Connection pooling for high concurrency
+    - Retry logic with exponential backoff for reliability
 
     Parameters
     ----------
@@ -41,6 +52,22 @@ class RedisBackend(BaseBackend):
         TTL in seconds for registry keys. Default: None (no expiry)
     group_expiry : int, optional
         TTL in seconds for group keys. Default: None (no expiry)
+    max_connections : int, optional
+        Maximum connections in the connection pool. Default: 100
+    socket_timeout : float, optional
+        Socket read/write timeout in seconds. Default: 5.0
+    socket_keepalive : bool, optional
+        Enable TCP keepalive. Default: True
+    retry_on_timeout : bool, optional
+        Retry operations on timeout. Default: True
+    health_check_interval : int, optional
+        Connection health check interval in seconds. Default: 30
+    retry_max_attempts : int, optional
+        Maximum retry attempts for failed operations. Default: 3
+    retry_base_delay : float, optional
+        Base delay between retries in seconds. Default: 0.1
+    retry_max_delay : float, optional
+        Maximum delay between retries in seconds. Default: 2.0
 
     Examples
     --------
@@ -50,7 +77,8 @@ class RedisBackend(BaseBackend):
     ...     redis_url="redis://localhost:6379/0",
     ...     channel_prefix="chat:",
     ...     registry_expiry=3600,  # 1 hour TTL
-    ...     group_expiry=86400    # 24 hour TTL
+    ...     group_expiry=86400,   # 24 hour TTL
+    ...     max_connections=200,  # Connection pool size
     ... )
     >>> await backend.connect()
     >>> await backend.publish("room.general", {"text": "hello"})
@@ -59,7 +87,8 @@ class RedisBackend(BaseBackend):
     -----
     Requires Redis server for operation. Connection is established lazily
     on first operation. Registry expiry helps prevent stale connection data
-    in long-running distributed deployments.
+    in long-running distributed deployments. Connection pooling improves
+    performance under high concurrency.
 
     """
 
@@ -70,35 +99,81 @@ class RedisBackend(BaseBackend):
         serializer: Optional["BaseSerializer"] = None,
         registry_expiry: int | None = None,
         group_expiry: int | None = None,
+        max_connections: int = 100,
+        socket_timeout: float = 5.0,
+        socket_keepalive: bool = True,
+        retry_on_timeout: bool = True,
+        health_check_interval: int = 30,
+        retry_max_attempts: int = 3,
+        retry_base_delay: float = 0.1,
+        retry_max_delay: float = 2.0,
     ):
         self.redis_url = redis_url
         self.channel_prefix = channel_prefix
         self.serializer = serializer or JSONSerializer()
         self.registry_expiry = registry_expiry
         self.group_expiry = group_expiry
+        self.max_connections = max_connections
+        self.socket_timeout = socket_timeout
+        self.socket_keepalive = socket_keepalive
+        self.retry_on_timeout = retry_on_timeout
+        self.health_check_interval = health_check_interval
+        self.retry_max_attempts = retry_max_attempts
+        self.retry_base_delay = retry_base_delay
+        self.retry_max_delay = retry_max_delay
         self.redis: Redis | None = None
         self.pubsub: PubSub | None = None
         self._listener_task: asyncio.Task | None = None
         self._pending_receives: dict[str, list[asyncio.Future]] = defaultdict(list)
+        self._connection_pool: ConnectionPool | None = None
 
     async def connect(self) -> None:
-        """Establish connection to Redis server.
+        """Establish connection to Redis server with connection pooling.
 
-        Creates Redis client and PubSub instances with appropriate
-        encoding settings based on serializer configuration.
+        Creates Redis client with connection pool and PubSub instances.
+        Connection pool provides better resource management for high
+        concurrency scenarios.
 
         Raises
         ------
         redis.ConnectionError
             If unable to connect to Redis server
 
+        Notes
+        -----
+        Connection pool settings:
+        - max_connections: Maximum pool size (default: 100)
+        - socket_timeout: Socket read/write timeout (default: 5.0s)
+        - socket_keepalive: Enable TCP keepalive (default: True)
+        - retry_on_timeout: Retry operations on timeout (default: True)
+        - health_check_interval: Connection health check interval (default: 30s)
+
         """
-        self.redis = aioredis.from_url(
+        # Create connection pool with configured settings
+        self._connection_pool = ConnectionPool.from_url(
             self.redis_url,
+            max_connections=self.max_connections,
+            socket_timeout=self.socket_timeout,
+            socket_keepalive=self.socket_keepalive,
+            retry_on_timeout=self.retry_on_timeout,
+            health_check_interval=self.health_check_interval,
             encoding=None if self.serializer.binary else "utf-8",
             decode_responses=not self.serializer.binary,
         )
+
+        self.redis = Redis(connection_pool=self._connection_pool)
         self.pubsub = self.redis.pubsub()
+
+    def _get_retry_decorator(self):
+        """Get a retry decorator configured with this instance's retry settings."""
+        return with_retry(
+            max_retries=self.retry_max_attempts,
+            base_delay=self.retry_base_delay,
+            max_delay=self.retry_max_delay,
+            exponential_base=2.0,
+            jitter=True,
+            exceptions=(RedisConnectionError, RedisTimeoutError, OSError),
+        )
 
     async def publish(self, channel: str, message: dict[str, Any]) -> None:
         """Publish message to Redis pub/sub channel.
@@ -114,6 +189,7 @@ class RedisBackend(BaseBackend):
         -----
         Message is serialized using configured serializer before publishing.
         Connects to Redis automatically if not already connected.
+        Uses retry logic with exponential backoff for reliability.
 
         """
         if not self.redis:
@@ -122,7 +198,13 @@ class RedisBackend(BaseBackend):
 
         full_channel = f"{self.channel_prefix}{channel}"
         serialized = self.serializer.dumps(message)
-        await self.redis.publish(full_channel, serialized)
+
+        @self._get_retry_decorator()
+        async def _publish() -> None:
+            assert self.redis is not None
+            await self.redis.publish(full_channel, serialized)
+
+        await _publish()
 
     async def subscribe(self, channel: str) -> None:
         """Subscribe to Redis pub/sub channel.
@@ -136,6 +218,7 @@ class RedisBackend(BaseBackend):
         -----
         Starts message listener task if not already running.
         Channel name is prefixed automatically.
+        Uses retry logic with exponential backoff for reliability.
 
         """
         if not self.pubsub:
@@ -143,7 +226,13 @@ class RedisBackend(BaseBackend):
         assert self.pubsub is not None
 
         full_channel = f"{self.channel_prefix}{channel}"
-        await self.pubsub.subscribe(full_channel)
+
+        @self._get_retry_decorator()
+        async def _subscribe() -> None:
+            assert self.pubsub is not None
+            await self.pubsub.subscribe(full_channel)
+
+        await _subscribe()
 
         if not self._listener_task or self._listener_task.done():
             self._listener_task = asyncio.create_task(self._listen())
@@ -180,7 +269,8 @@ class RedisBackend(BaseBackend):
 
         Notes
         -----
-        Retrieves group members from Redis and publishes to each channel.
+        Uses streaming with SSCAN to avoid loading all members into memory.
+        Uses Redis pipeline for efficient batch publishing within each batch.
         Handles exceptions gracefully - failed publishes are ignored.
 
         """
@@ -188,12 +278,24 @@ class RedisBackend(BaseBackend):
             await self.connect()
         assert self.redis is not None
 
-        group_key = f"{self.channel_prefix}group:{group}"
+        serialized = self.serializer.dumps(message)
         redis_client: Any = self.redis
-        channels = await redis_client.smembers(group_key)
 
-        tasks = [self.publish(channel, message) for channel in channels]
-        await asyncio.gather(*tasks, return_exceptions=True)
+        # Stream group members in batches and use pipeline for each batch
+        async for batch in self.group_channels_stream(group, batch_size=100):
+            pipe = redis_client.pipeline()
+            for channel in batch:
+                full_channel = f"{self.channel_prefix}{channel}"
+                pipe.publish(full_channel, serialized)
+            try:
+                await pipe.execute()
+            except Exception:
+                # Fallback to individual publishes if pipeline fails
+                for channel in batch:
+                    try:
+                        await self.publish(channel, message)
+                    except Exception:
+                        pass
 
     async def group_add(self, group: str, channel: str) -> None:
         """Add channel to Redis group with optional TTL.
@@ -220,7 +322,7 @@ class RedisBackend(BaseBackend):
 
         if self.group_expiry is not None:
             pipe = redis_client.pipeline()
-            pipe.sadd(group_key, self.group_expiry)
+            pipe.sadd(group_key, channel)
             pipe.expire(group_key, self.group_expiry)
             await pipe.execute()
         else:
@@ -268,6 +370,9 @@ class RedisBackend(BaseBackend):
         Handles both string and bytes responses from Redis.
         Returns empty set if group doesn't exist.
 
+        Consider using group_channels_stream() for large groups to avoid
+        loading all members into memory at once.
+
         """
         if not self.redis:
             await self.connect()
@@ -277,6 +382,54 @@ class RedisBackend(BaseBackend):
         redis_client: Any = self.redis
         members = await redis_client.smembers(group_key)
         return {m.decode() if isinstance(m, (bytes, bytearray)) else m for m in members}
+
+    async def group_channels_stream(
+        self, group: str, batch_size: int = 100
+    ) -> AsyncIterator[list[str]]:
+        """Stream group members using SSCAN to avoid loading all into memory.
+
+        Parameters
+        ----------
+        group : str
+            Group name to query
+        batch_size : int, optional
+            Approximate number of members per batch. Default: 100
+
+        Yields
+        ------
+        list[str]
+            Batch of channel names in the group
+
+        Notes
+        -----
+        Uses Redis SSCAN for cursor-based iteration, which is memory-efficient
+        for large groups. The batch_size is a hint to Redis and actual batch
+        sizes may vary.
+
+        Examples
+        --------
+        Processing group members in batches:
+
+        >>> async for batch in backend.group_channels_stream("room_123"):
+        ...     for channel in batch:
+        ...         await backend.publish(channel, message)
+
+        """
+        if not self.redis:
+            await self.connect()
+        assert self.redis is not None
+
+        group_key = f"{self.channel_prefix}group:{group}"
+        redis_client: Any = self.redis
+        cursor = 0
+
+        while True:
+            cursor, members = await redis_client.sscan(group_key, cursor, count=batch_size)
+            if members:
+                batch = [m.decode() if isinstance(m, (bytes, bytearray)) else m for m in members]
+                yield batch
+            if cursor == 0:
+                break
 
     async def _listen(self) -> None:
         if not self.pubsub:
@@ -359,18 +512,25 @@ class RedisBackend(BaseBackend):
     async def cleanup(self) -> None:
         """Clean up Redis connections and background tasks.
 
-        Cancels listener task, closes pubsub connection, and closes Redis client.
+        Cancels listener task, closes pubsub connection, closes Redis client,
+        and disconnects the connection pool.
         Should be called during application shutdown.
         """
         if self._listener_task:
             self._listener_task.cancel()
-            await self._listener_task
+            try:
+                await self._listener_task
+            except asyncio.CancelledError:
+                pass
 
         if self.pubsub:
             await self.pubsub.close()
 
         if self.redis:
             await self.redis.close()
+
+        if self._connection_pool:
+            await self._connection_pool.disconnect()
 
     def _registry_key(self, *parts: str) -> str:
         return f"{self.channel_prefix}registry:{':'.join(parts)}"
@@ -600,6 +760,44 @@ class RedisBackend(BaseBackend):
         if self.registry_expiry is not None:
             await redis_client.expire(connection_key, self.registry_expiry)
 
+    async def registry_refresh_ttl(self, connection_id: str, user_id: str | None = None) -> None:
+        """Refresh TTL for connection registry keys to prevent premature expiry.
+
+        Parameters
+        ----------
+        connection_id : str
+            Connection identifier to refresh
+        user_id : str | None, optional
+            User identifier for user mapping TTL refresh. Default: None
+
+        Notes
+        -----
+        Should be called periodically (e.g., on heartbeat or activity) to keep
+        active connections from expiring. Uses Redis pipeline for efficiency.
+        No-op if registry_expiry is not configured.
+
+        """
+        if self.registry_expiry is None:
+            return
+
+        if not self.redis:
+            await self.connect()
+        assert self.redis is not None
+
+        redis_client: Any = self.redis
+        pipe = redis_client.pipeline()
+
+        # Refresh all relevant keys
+        pipe.expire(self._registry_key("connections"), self.registry_expiry)
+        pipe.expire(self._registry_key("connection", connection_id), self.registry_expiry)
+        if user_id:
+            pipe.expire(self._registry_key("user", user_id), self.registry_expiry)
+
+        try:
+            await pipe.execute()
+        except Exception:
+            pass  # Best effort - don't fail if refresh fails
+
     async def registry_get_connection_groups(self, connection_id: str) -> set[str]:
         """Get groups for a connection from Redis registry.
 
@@ -673,6 +871,9 @@ class RedisBackend(BaseBackend):
         Handles both string and bytes responses from Redis.
         Returns empty set if user has no connections.
 
+        Consider using registry_get_user_connections_stream() for users
+        with many connections to avoid loading all into memory.
+
         """
         if not self.redis:
             await self.connect()
@@ -681,6 +882,56 @@ class RedisBackend(BaseBackend):
         redis_client: Any = self.redis
         members = await redis_client.smembers(self._registry_key("user", user_id))
         return {m.decode() if isinstance(m, (bytes, bytearray)) else str(m) for m in members}
+
+    async def registry_get_user_connections_stream(
+        self, user_id: str, batch_size: int = 100
+    ) -> AsyncIterator[list[str]]:
+        """Stream user connections using SSCAN to avoid loading all into memory.
+
+        Parameters
+        ----------
+        user_id : str
+            User identifier to query
+        batch_size : int, optional
+            Approximate number of connections per batch. Default: 100
+
+        Yields
+        ------
+        list[str]
+            Batch of connection IDs for the user
+
+        Notes
+        -----
+        Uses Redis SSCAN for cursor-based iteration, which is memory-efficient
+        for users with many connections. The batch_size is a hint to Redis
+        and actual batch sizes may vary.
+
+        Examples
+        --------
+        Processing user connections in batches:
+
+        >>> async for batch in backend.registry_get_user_connections_stream("user123"):
+        ...     for conn_id in batch:
+        ...         await backend.publish(conn_id, message)
+
+        """
+        if not self.redis:
+            await self.connect()
+        assert self.redis is not None
+
+        user_key = self._registry_key("user", user_id)
+        redis_client: Any = self.redis
+        cursor = 0
+
+        while True:
+            cursor, members = await redis_client.sscan(user_key, cursor, count=batch_size)
+            if members:
+                batch = [
+                    m.decode() if isinstance(m, (bytes, bytearray)) else str(m) for m in members
+                ]
+                yield batch
+            if cursor == 0:
+                break
 
     def registry_get_prefix(self) -> str:
         """Get registry key prefix for this Redis backend.

@@ -1,5 +1,7 @@
+import uuid
 from typing import Literal
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -50,6 +52,10 @@ class Settings(BaseSettings):
     MAX_TOTAL_CONNECTIONS : int
         Maximum total connections across all users. Default: 10000
 
+    SERVER_INSTANCE_ID : str | None
+        Unique identifier for this server instance in distributed deployments.
+        If not set, auto-generated on startup. Default: None (auto-generated)
+
     LOG_LEVEL : str
         Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL). Default: "INFO"
 
@@ -88,6 +94,13 @@ class Settings(BaseSettings):
     MAX_CONNECTIONS_PER_CLIENT: int = 5
     MAX_TOTAL_CONNECTIONS: int = 10000
 
+    SERVER_INSTANCE_ID: str | None = None
+
     LOG_LEVEL: str = "INFO"
 
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=True)
+
+    @field_validator("SERVER_INSTANCE_ID", mode="before")
+    @classmethod
+    def set_instance_id(cls, v: str | None) -> str:
+        return v or f"server-{uuid.uuid4().hex[:12]}"

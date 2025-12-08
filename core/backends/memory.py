@@ -2,6 +2,8 @@ import asyncio
 from collections import defaultdict
 from typing import Any
 
+from core.utils import run_with_concurrency_limit
+
 from .base import BaseBackend
 
 
@@ -193,7 +195,9 @@ class MemoryBackend(BaseBackend):
             return
 
         tasks = [self.publish(channel, message) for channel in channels]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        results = await run_with_concurrency_limit(
+            tasks, max_concurrent=100, return_exceptions=True
+        )
 
         # Log any exceptions that occurred during publishing
         failed_channels = []

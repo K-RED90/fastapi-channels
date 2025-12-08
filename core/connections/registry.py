@@ -1,5 +1,6 @@
 import asyncio
 import uuid
+from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
 from fastapi import WebSocket
@@ -210,8 +211,49 @@ class ConnectionRegistry:
         Returns only connections registered on this server.
         Use backend.registry_count_connections() for global count.
 
+        Consider using iter_connections() for large registries to avoid
+        loading all connections into memory at once.
+
         """
         return list(self.connections.values())
+
+    async def iter_connections(self, batch_size: int = 100) -> AsyncIterator[list[Connection]]:
+        """Stream connections in batches to avoid loading all into memory.
+
+        Parameters
+        ----------
+        batch_size : int, optional
+            Number of connections per batch. Default: 100
+
+        Yields
+        ------
+        list[Connection]
+            Batch of Connection objects
+
+        Notes
+        -----
+        Uses iterator-based approach to yield connections in batches,
+        allowing memory-efficient processing of large registries.
+        Each batch is processed before the next is yielded.
+
+        Examples
+        --------
+        Processing connections in batches:
+
+        >>> async for batch in registry.iter_connections(batch_size=50):
+        ...     tasks = [process_conn(conn) for conn in batch]
+        ...     await asyncio.gather(*tasks)
+
+        """
+        from core.utils import batch_items
+
+        connection_ids = list(self.connections.keys())
+        for batch_ids in batch_items(connection_ids, batch_size):
+            batch = [
+                self.connections[conn_id] for conn_id in batch_ids if conn_id in self.connections
+            ]
+            if batch:
+                yield batch
 
     async def count(self) -> int:
         """Get total connection count across all servers.

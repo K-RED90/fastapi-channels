@@ -1,6 +1,6 @@
 import json
 from abc import abstractmethod
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from core.connections.manager import ConnectionManager
 from core.connections.state import Connection
@@ -12,9 +12,6 @@ from core.exceptions import (
 )
 from core.middleware.base import Middleware
 from core.typed import Message, MessagePriority
-
-if TYPE_CHECKING:
-    from core.backends.base import BaseBackend
 
 
 class BaseConsumer:
@@ -42,8 +39,6 @@ class BaseConsumer:
         WebSocket connection state and metadata
     manager : ConnectionManager
         Manager for connection lifecycle and messaging
-    backend : BaseBackend
-        Channel layer backend for direct messaging
     middleware_stack : Middleware | None, optional
         Message processing middleware chain. Default: None
 
@@ -75,13 +70,10 @@ class BaseConsumer:
         self,
         connection: Connection,
         manager: ConnectionManager,
-        backend: "BaseBackend",
         middleware_stack: Middleware | None = None,
     ):
         self.connection = connection
         self.manager = manager
-        self.backend = backend
-        self.groups: set[str] = set()
         self.middleware_stack = middleware_stack
 
     @abstractmethod
@@ -187,12 +179,11 @@ class BaseConsumer:
 
         Notes
         -----
-        Updates both manager and local group tracking.
+        Updates manager which updates connection.groups (source of truth).
         Enables receiving group messages.
 
         """
         await self.manager.join_group(self.connection.channel_name, group)
-        self.groups.add(group)
 
     async def leave_group(self, group: str) -> None:
         """Remove connection from a messaging group.
@@ -204,12 +195,11 @@ class BaseConsumer:
 
         Notes
         -----
-        Updates both manager and local group tracking.
+        Updates manager which updates connection.groups (source of truth).
         Stops receiving group messages.
 
         """
         await self.manager.leave_group(self.connection.channel_name, group)
-        self.groups.discard(group)
 
     async def send_to_group(self, group: str, message: dict[str, Any] | Message) -> None:
         """Send message to all connections in a group.
