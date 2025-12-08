@@ -1,5 +1,4 @@
-"""
-In-memory SQLite database for storing chat conversations
+"""In-memory SQLite database for storing chat conversations
 """
 
 import sqlite3

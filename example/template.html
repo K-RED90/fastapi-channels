@@ -778,6 +778,13 @@
                         document.getElementById('typingIndicator').textContent = '';
                     }
                     break;
+
+                case 'ping':
+                    // Respond to server ping with pong
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({ type: 'pong', timestamp: Date.now() / 1000 }));
+                    }
+                    break;
                     
                 case 'error':
                     showError(payload.message || message.message);

@@ -13,7 +13,7 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
-@dataclass
+@dataclass(init=True)
 class Connection:
     """Represents an active WebSocket connection with metadata and state.
 
@@ -79,6 +79,7 @@ class Connection:
     All datetime fields use UTC timezone for consistency.
     Group memberships are tracked locally and synchronized with backend.
     Heartbeat monitoring helps detect dead connections.
+
     """
 
     websocket: WebSocket
@@ -115,6 +116,7 @@ class Connection:
         -----
         Checks WebSocket state, heartbeat health, and timeout.
         Used by heartbeat loop to detect dead connections.
+
         """
         if self.websocket.client_state != WebSocketState.CONNECTED:
             return False
@@ -136,6 +138,7 @@ class Connection:
         -----
         Measures time since last message sent or received.
         Used for connection cleanup and monitoring.
+
         """
         return (self.now - self.last_activity).total_seconds()
 
@@ -152,6 +155,7 @@ class Connection:
         -----
         Measures total time connection has been active.
         Used for statistics and connection monitoring.
+
         """
         return (self.now - self.connected_at).total_seconds()
 
@@ -162,6 +166,7 @@ class Connection:
         -----
         Called when sending or receiving messages.
         Resets idle time counter.
+
         """
         self.last_activity = self.now
 
@@ -173,6 +178,7 @@ class Connection:
         Called when receiving pong responses from client.
         Updates both heartbeat and activity timestamps.
         Records pong in heartbeat monitor.
+
         """
         self.last_heartbeat = self.now
         self.heartbeat.record_pong()
@@ -191,6 +197,7 @@ class Connection:
         Used for serialization and API responses.
         Includes computed fields like duration and idle time.
         Safe for JSON serialization.
+
         """
         return {
             "channel_name": self.channel_name,

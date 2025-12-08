@@ -21,6 +21,7 @@ class BaseBackend(ABC):
     -----
     All methods are async to support both local and remote backend implementations.
     Connection registry methods enable cross-server visibility in distributed deployments.
+
     """
 
     @abstractmethod
@@ -38,6 +39,7 @@ class BaseBackend(ABC):
         -----
         This method should be non-blocking and return immediately.
         Message delivery is handled asynchronously by the backend.
+
         """
 
     @abstractmethod
@@ -53,6 +55,7 @@ class BaseBackend(ABC):
         -----
         After subscribing, messages sent to this channel will be
         deliverable via the receive() method.
+
         """
 
     @abstractmethod
@@ -68,6 +71,7 @@ class BaseBackend(ABC):
         -----
         After unsubscribing, messages to this channel will no longer
         be delivered to this backend instance.
+
         """
 
     @abstractmethod
@@ -85,6 +89,7 @@ class BaseBackend(ABC):
         -----
         Channels in a group receive messages sent to the group.
         A channel can belong to multiple groups simultaneously.
+
         """
 
     @abstractmethod
@@ -101,6 +106,7 @@ class BaseBackend(ABC):
         Notes
         -----
         Channel will no longer receive group messages after removal.
+
         """
 
     @abstractmethod
@@ -118,6 +124,7 @@ class BaseBackend(ABC):
         -----
         This is equivalent to publishing to each channel in the group.
         Failed deliveries should be logged but not raise exceptions.
+
         """
 
     @abstractmethod
@@ -132,6 +139,7 @@ class BaseBackend(ABC):
         Notes
         -----
         Called during application shutdown to ensure clean resource cleanup.
+
         """
 
     @abstractmethod
@@ -154,6 +162,7 @@ class BaseBackend(ABC):
         -----
         This is typically a blocking operation that waits for messages.
         Should return None on timeout rather than raising an exception.
+
         """
 
     @abstractmethod
@@ -173,6 +182,7 @@ class BaseBackend(ABC):
         Notes
         -----
         Returns a snapshot of group membership at the time of the call.
+
         """
 
     @abstractmethod
@@ -188,6 +198,7 @@ class BaseBackend(ABC):
         -----
         Used primarily for testing and development.
         Should not be used in production environments.
+
         """
 
     async def new_channel(self, prefix: str = "channel") -> str:
@@ -209,6 +220,7 @@ class BaseBackend(ABC):
         'channel.1640995200000.a1b2c3d4'
         >>> await backend.new_channel("ws.user")
         'ws.user.1640995200000.e5f6g7h8'
+
         """
         return f"{prefix}.{int(asyncio.get_event_loop().time() * 1000)}.{uuid.uuid4().hex[:8]}"
 
@@ -240,6 +252,7 @@ class BaseBackend(ABC):
         -----
         This enables cross-server visibility of connections in distributed deployments.
         The registry tracks active connections for group messaging and user targeting.
+
         """
 
     @abstractmethod
@@ -257,6 +270,7 @@ class BaseBackend(ABC):
         -----
         Called when connections disconnect or timeout.
         Ensures registry stays consistent with active connections.
+
         """
 
     @abstractmethod
@@ -274,6 +288,7 @@ class BaseBackend(ABC):
         -----
         Used when connections join/leave groups dynamically.
         Maintains consistency between local state and registry.
+
         """
 
     @abstractmethod
@@ -294,6 +309,7 @@ class BaseBackend(ABC):
         -----
         Used for cleanup when connections disconnect.
         Returns empty set if connection not found.
+
         """
 
     @abstractmethod
@@ -309,6 +325,7 @@ class BaseBackend(ABC):
         -----
         Includes connections from all servers in distributed deployments.
         Used for monitoring and connection limits.
+
         """
 
     @abstractmethod
@@ -329,7 +346,56 @@ class BaseBackend(ABC):
         -----
         Enables sending messages to all connections of a user.
         Returns empty set if user has no connections.
+
         """
+
+    async def registry_add_connection_if_under_limit(
+        self,
+        connection_id: str,
+        user_id: str | None,
+        metadata: dict[str, Any],
+        groups: set[str],
+        heartbeat_timeout: float,
+        max_connections: int,
+    ) -> bool:
+        """Atomically check connection limit and add connection if under limit.
+
+        Parameters
+        ----------
+        connection_id : str
+            Unique identifier for the connection
+        user_id : str | None
+            User identifier if authenticated, None for anonymous
+        metadata : dict[str, Any]
+            Additional connection metadata (IP, user agent, etc.)
+        groups : set[str]
+            Initial groups the connection belongs to
+        heartbeat_timeout : float
+            Heartbeat timeout in seconds
+        max_connections : int
+            Maximum total connections allowed
+
+        Returns
+        -------
+        bool
+            True if connection was added, False if limit would be exceeded
+
+        Notes
+        -----
+        This method atomically checks the connection count and adds the connection
+        only if under the limit. Prevents race conditions in distributed deployments.
+        Default implementation uses non-atomic check-then-act (for backwards compatibility).
+        Subclasses should override with atomic implementation.
+
+        """
+        # Default non-atomic implementation for backwards compatibility
+        count = await self.registry_count_connections()
+        if count >= max_connections:
+            return False
+        await self.registry_add_connection(
+            connection_id, user_id, metadata, groups, heartbeat_timeout
+        )
+        return True
 
     @abstractmethod
     def registry_get_prefix(self) -> str:
@@ -343,6 +409,7 @@ class BaseBackend(ABC):
         Notes
         -----
         Used for debugging and monitoring registry operations.
+
         """
 
     def supports_broadcast_channel(self) -> bool:
@@ -357,5 +424,6 @@ class BaseBackend(ABC):
         -----
         Broadcast channel allows sending messages to all connections
         without explicitly managing groups. Only Redis backend supports this.
+
         """
         return False

@@ -68,6 +68,7 @@ class BaseConsumer:
     Subclasses must implement connect(), disconnect(), and receive() methods.
     Messages are automatically parsed from JSON and validated.
     Heartbeat messages ("pong") are handled automatically.
+
     """
 
     def __init__(
@@ -99,6 +100,7 @@ class BaseConsumer:
             If connection authentication fails
         ValidationError
             If connection setup validation fails
+
         """
 
     @abstractmethod
@@ -114,6 +116,7 @@ class BaseConsumer:
         - Leaving subscribed groups
         - Cleaning up connection-specific resources
         - Logging disconnection events
+
         """
 
     @abstractmethod
@@ -138,6 +141,7 @@ class BaseConsumer:
             If message processing fails
         ValidationError
             If message content is invalid
+
         """
 
     async def send(self, message: Message) -> None:
@@ -152,6 +156,7 @@ class BaseConsumer:
         -----
         Serializes message to JSON before sending.
         Updates connection statistics (message count, bytes sent).
+
         """
         await self.connection.websocket.send_json(message.to_dict())
 
@@ -167,6 +172,7 @@ class BaseConsumer:
         -----
         Creates Message with type "message" if not specified.
         Equivalent to send(Message(type="message", data=data)).
+
         """
         message = Message(type=data.get("type") or "message", data=data)
         await self.send(message)
@@ -183,6 +189,7 @@ class BaseConsumer:
         -----
         Updates both manager and local group tracking.
         Enables receiving group messages.
+
         """
         await self.manager.join_group(self.connection.channel_name, group)
         self.groups.add(group)
@@ -199,6 +206,7 @@ class BaseConsumer:
         -----
         Updates both manager and local group tracking.
         Stops receiving group messages.
+
         """
         await self.manager.leave_group(self.connection.channel_name, group)
         self.groups.discard(group)
@@ -217,6 +225,7 @@ class BaseConsumer:
         -----
         Automatically serializes Message objects.
         Sends to all connections in group except sender.
+
         """
         payload = message.to_dict() if isinstance(message, Message) else message
         await self.manager.send_group(group, payload)
@@ -250,6 +259,7 @@ class BaseConsumer:
         Automatically handles heartbeat messages by updating connection state.
         Tracks message statistics (bytes received, activity).
         Sends error responses directly to client for validation failures.
+
         """
         try:
             data = json.loads(raw_message)

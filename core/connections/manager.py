@@ -33,7 +33,7 @@ class ConnectionManager:
 
     The manager runs several background tasks:
     - Heartbeat loop: Sends ping messages and monitors connection health
-    - Cleanup loop: Periodic statistics logging
+    - Statistics loop: Periodic statistics logging
     - Broadcast loop: Handles global broadcast messages (Redis backend only)
 
     Parameters
@@ -68,6 +68,7 @@ class ConnectionManager:
     Background tasks must be started with start_tasks() and stopped with stop_tasks().
     Connection limits are enforced per user to prevent abuse.
     Broadcast functionality requires Redis backend support.
+
     """
 
     def __init__(
@@ -79,7 +80,7 @@ class ConnectionManager:
         self._registry = registry
         self._receiver_tasks: dict[str, asyncio.Task] = {}
         self._heartbeat_task: asyncio.Task | None = None
-        self._cleanup_task: asyncio.Task | None = None
+        self._stats_task: asyncio.Task | None = None
         self._broadcast_task: asyncio.Task | None = None
         self._running = False
         self.max_connections_per_client = max_connections_per_client
@@ -128,6 +129,7 @@ class ConnectionManager:
         -----
         Performs connection limit checks, registers connection in backend,
         subscribes to personal channel, and starts message receiver task.
+
         """
         if user_id:
             current = await self.registry.user_channel_count(user_id)
@@ -148,9 +150,7 @@ class ConnectionManager:
 
         await websocket.accept()
 
-        channel_name = await self.registry.backend.new_channel(
-            prefix=f"ws.{user_id}" if user_id else "ws"
-        )
+        channel_name = await self.backend.new_channel(prefix=f"ws.{user_id}" if user_id else "ws")
 
         connection = await self.registry.register(
             websocket=websocket,
@@ -208,6 +208,7 @@ class ConnectionManager:
         Idempotent operation - safe to call multiple times.
         Performs graceful cleanup: cancels receiver task, leaves groups,
         unsubscribes from backend, closes WebSocket, unregisters connection.
+
         """
         connection = self.registry.get(connection_id)
         if not connection:
@@ -253,6 +254,7 @@ class ConnectionManager:
         -----
         Updates connection statistics (message count, bytes sent).
         Message delivery handled by backend publish mechanism.
+
         """
         await self.backend.publish(connection_id, message)
         if conn := self.registry.get(connection_id):
@@ -273,6 +275,7 @@ class ConnectionManager:
         Notes
         -----
         Uses backend group_send for efficient multi-connection delivery.
+
         """
         await self.backend.group_send(group, message)
 
@@ -294,6 +297,7 @@ class ConnectionManager:
         -----
         Useful for echo prevention in chat applications.
         Gets group members from local registry for exclusion logic.
+
         """
         connections = self.registry.get_by_group(group)
         tasks = [
@@ -315,6 +319,7 @@ class ConnectionManager:
         -----
         Uses broadcast channel if backend supports it (Redis only),
         otherwise iterates through all connections in registry.
+
         """
         if self.backend.supports_broadcast_channel():
             await self.backend.publish(self._broadcast_channel, message)
@@ -336,6 +341,7 @@ class ConnectionManager:
         -----
         Updates both backend group membership and local registry.
         Enables connection to receive group messages.
+
         """
         await self.backend.group_add(group, connection_id)
         await self.registry.add_to_group(connection_id, group)
@@ -354,6 +360,7 @@ class ConnectionManager:
         -----
         Updates both backend group membership and local registry.
         Stops connection from receiving group messages.
+
         """
         await self.backend.group_discard(group, connection_id)
         await self.registry.remove_from_group(connection_id, group)
@@ -375,6 +382,7 @@ class ConnectionManager:
         -----
         Returns only connections that exist in local registry.
         May not include connections from other servers in distributed setup.
+
         """
         channels = await self.registry.user_channels(user_id)
         results: list[Connection] = []
@@ -403,6 +411,7 @@ class ConnectionManager:
         -----
         Sends message to all active connections for the user.
         Returns count of successful sends.
+
         """
         count = 0
         channels = await self.registry.user_channels(user_id)
@@ -438,19 +447,20 @@ class ConnectionManager:
     async def start_tasks(self) -> None:
         """Start background maintenance tasks.
 
-        Starts heartbeat, cleanup, and broadcast tasks.
+        Starts heartbeat, statistics, and broadcast tasks.
         Should be called during application startup.
 
         Notes
         -----
         Idempotent - safe to call multiple times.
         Broadcast task only started if backend supports broadcast channel.
+
         """
         if self._running:
             return
         self._running = True
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
-        self._cleanup_task = asyncio.create_task(self._cleanup_loop())
+        self._stats_task = asyncio.create_task(self._stats_loop())
         if self.backend.supports_broadcast_channel():
             try:
                 await self.backend.subscribe(self._broadcast_channel)
@@ -463,15 +473,16 @@ class ConnectionManager:
     async def stop_tasks(self) -> None:
         """Stop all background maintenance tasks.
 
-        Cancels and waits for heartbeat, cleanup, and broadcast tasks.
+        Cancels and waits for heartbeat, statistics, and broadcast tasks.
         Should be called during application shutdown.
 
         Notes
         -----
         Ensures clean shutdown of background tasks.
+
         """
         self._running = False
-        for task in [self._heartbeat_task, self._cleanup_task, self._broadcast_task]:
+        for task in [self._heartbeat_task, self._stats_task, self._broadcast_task]:
             if task:
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
@@ -501,7 +512,7 @@ class ConnectionManager:
             except asyncio.CancelledError:
                 break
 
-    async def _cleanup_loop(self) -> None:
+    async def _stats_loop(self) -> None:
         while self._running:
             try:
                 await asyncio.sleep(60)

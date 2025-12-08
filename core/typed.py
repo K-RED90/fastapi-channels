@@ -62,6 +62,7 @@ class Message:
     ...     priority=MessagePriority.HIGH,
     ...     ttl_seconds=300.0  # 5 minutes
     ... )
+
     """
 
     type: str
@@ -89,6 +90,7 @@ class Message:
         >>> # After 60+ seconds...
         >>> msg.is_expired()  # True
         True
+
         """
         if self.ttl_seconds is None:
             return False
@@ -107,6 +109,7 @@ class Message:
         >>> msg = Message(type="test", data="hello")
         >>> msg.to_dict()
         {'type': 'test', 'data': 'hello', 'sender_id': None, ...}
+
         """
         return {
             "type": self.type,
@@ -141,6 +144,7 @@ class Message:
         >>> msg = Message.from_dict(data)
         >>> msg.priority
         <MessagePriority.HIGH: 'high'>
+
         """
         priority_value = payload.get("priority", MessagePriority.NORMAL.value)
         priority = (

@@ -1,5 +1,4 @@
-"""
-FastAPI WebSocket Chat Application Example
+"""FastAPI WebSocket Chat Application Example
 
 A complete example application demonstrating the websocket chat system
 with an embedded HTML frontend.

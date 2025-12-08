@@ -53,7 +53,6 @@ class TestChatConsumer:
 
     def test_message_creation(self):
         """Test Message object creation and methods"""
-
         # Test message creation
         msg = Message(type="test", data={"key": "value"}, sender_id="sender123")
 
@@ -73,7 +72,6 @@ class TestChatConsumer:
 
     def test_memory_backend(self):
         """Test MemoryBackend functionality"""
-
         backend = MemoryBackend()
 
         # Test group operations

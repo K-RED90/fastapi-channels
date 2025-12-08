@@ -68,6 +68,7 @@ class Settings(BaseSettings):
     -----
     Settings are loaded from environment variables with case-sensitive matching.
     Use a .env file in the project root for local development.
+
     """
 
     BACKEND_TYPE: Literal["memory", "redis"] = "memory"

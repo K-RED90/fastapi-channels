@@ -60,9 +60,11 @@ class ConnectionRegistry:
 
     Notes
     -----
-    Connection limits are enforced locally but may be bypassed in distributed setups
-    where connections are registered on other servers. Backend limits should be used
-    for global enforcement.
+    Connection limits are enforced atomically using backend.registry_add_connection_if_under_limit(),
+    which prevents race conditions in distributed deployments. The Redis backend uses a Lua script
+    for true atomicity across all server instances, while the Memory backend uses asyncio locks
+    for thread-safety within a single process.
+
     """
 
     def __init__(
@@ -115,15 +117,11 @@ class ConnectionRegistry:
         Thread-safe operation using asyncio lock.
         Registers connection in both local registry and backend.
         Generates UUID if no connection_id provided.
+
         """
+        conn_id = connection_id or str(uuid.uuid4())
+
         async with self._lock:
-            # Use backend count when available so limits consider all servers.
-            total_connections = await self.count()
-            if total_connections >= self.max_connections:
-                raise ConnectionError("Maximum connections reached")
-
-            conn_id = connection_id or str(uuid.uuid4())
-
             if conn_id in self.connections:
                 raise ConnectionError(f"Connection {conn_id} already exists")
 
@@ -136,15 +134,22 @@ class ConnectionRegistry:
             )
             connection.state = ConnectionState.CONNECTED
 
-            self.connections[conn_id] = connection
-
-        await self.backend.registry_add_connection(
+        # Atomically check limit and register in backend
+        # This prevents race conditions in distributed deployments
+        added = await self.backend.registry_add_connection_if_under_limit(
             connection_id=conn_id,
             user_id=connection.user_id,
             metadata=connection.metadata,
             groups=connection.groups,
             heartbeat_timeout=connection.heartbeat_timeout,
+            max_connections=self.max_connections,
         )
+
+        if not added:
+            raise ConnectionError("Maximum connections reached")
+
+        async with self._lock:
+            self.connections[conn_id] = connection
 
         return connection
 
@@ -161,6 +166,7 @@ class ConnectionRegistry:
         Thread-safe operation.
         Removes from both local registry and backend.
         No-op if connection doesn't exist.
+
         """
         async with self._lock:
             connection = self.connections.pop(connection_id, None)
@@ -187,6 +193,7 @@ class ConnectionRegistry:
         -----
         Returns only locally registered connections.
         Use backend methods for cross-server lookups.
+
         """
         return self.connections.get(connection_id)
 
@@ -202,6 +209,7 @@ class ConnectionRegistry:
         -----
         Returns only connections registered on this server.
         Use backend.registry_count_connections() for global count.
+
         """
         return list(self.connections.values())
 
@@ -217,6 +225,7 @@ class ConnectionRegistry:
         -----
         Delegates to backend for accurate distributed count.
         Includes connections from all server instances.
+
         """
         return await self.backend.registry_count_connections()
 
@@ -234,6 +243,7 @@ class ConnectionRegistry:
         -----
         Updates both local connection state and backend registry.
         Ensures cross-server visibility of group membership.
+
         """
         if connection := self.get(connection_id):
             connection.groups.add(group)
@@ -256,6 +266,7 @@ class ConnectionRegistry:
         -----
         Updates both local connection state and backend registry.
         Ensures consistent group membership across servers.
+
         """
         if connection := self.get(connection_id):
             connection.groups.discard(group)
@@ -281,6 +292,7 @@ class ConnectionRegistry:
         -----
         Returns only connections from this server instance.
         Use backend.group_channels() for cross-server group members.
+
         """
         return [conn for conn in self.connections.values() if group in conn.groups]
 
@@ -301,6 +313,7 @@ class ConnectionRegistry:
         -----
         Includes connections from all server instances.
         Returns empty set for anonymous users (empty user_id).
+
         """
         if not user_id:
             return set()
@@ -324,6 +337,7 @@ class ConnectionRegistry:
         -----
         Counts connections across all server instances.
         Returns 0 for anonymous users.
+
         """
         if not user_id:
             return 0

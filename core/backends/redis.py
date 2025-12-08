@@ -60,6 +60,7 @@ class RedisBackend(BaseBackend):
     Requires Redis server for operation. Connection is established lazily
     on first operation. Registry expiry helps prevent stale connection data
     in long-running distributed deployments.
+
     """
 
     def __init__(
@@ -90,6 +91,7 @@ class RedisBackend(BaseBackend):
         ------
         redis.ConnectionError
             If unable to connect to Redis server
+
         """
         self.redis = aioredis.from_url(
             self.redis_url,
@@ -112,6 +114,7 @@ class RedisBackend(BaseBackend):
         -----
         Message is serialized using configured serializer before publishing.
         Connects to Redis automatically if not already connected.
+
         """
         if not self.redis:
             await self.connect()
@@ -133,6 +136,7 @@ class RedisBackend(BaseBackend):
         -----
         Starts message listener task if not already running.
         Channel name is prefixed automatically.
+
         """
         if not self.pubsub:
             await self.connect()
@@ -156,6 +160,7 @@ class RedisBackend(BaseBackend):
         -----
         Channel name is prefixed automatically.
         No-op if not currently subscribed.
+
         """
         if not self.pubsub:
             return
@@ -177,6 +182,7 @@ class RedisBackend(BaseBackend):
         -----
         Retrieves group members from Redis and publishes to each channel.
         Handles exceptions gracefully - failed publishes are ignored.
+
         """
         if not self.redis:
             await self.connect()
@@ -203,6 +209,7 @@ class RedisBackend(BaseBackend):
         -----
         Uses Redis pipeline for atomic add + expire operations when TTL configured.
         Group key gets TTL on first channel addition.
+
         """
         if not self.redis:
             await self.connect()
@@ -233,6 +240,7 @@ class RedisBackend(BaseBackend):
         -----
         No-op if channel is not in group.
         Group key remains in Redis even when empty.
+
         """
         if not self.redis:
             return
@@ -259,6 +267,7 @@ class RedisBackend(BaseBackend):
         -----
         Handles both string and bytes responses from Redis.
         Returns empty set if group doesn't exist.
+
         """
         if not self.redis:
             await self.connect()
@@ -304,6 +313,7 @@ class RedisBackend(BaseBackend):
         -----
         Creates future and waits for message delivery via _listen task.
         Automatically subscribes to channel if not already subscribed.
+
         """
         await self.subscribe(channel)
 
@@ -333,6 +343,7 @@ class RedisBackend(BaseBackend):
         -----
         Uses SCAN to find and delete all matching keys.
         Used primarily for testing and development.
+
         """
         if self.redis:
             pattern = f"{self.channel_prefix}*"
@@ -392,6 +403,7 @@ class RedisBackend(BaseBackend):
         Stores connection data in Redis hash with JSON serialization.
         Applies TTL to registry keys if configured.
         Maintains bidirectional user-connection mappings.
+
         """
         if not self.redis:
             await self.connect()
@@ -419,6 +431,118 @@ class RedisBackend(BaseBackend):
             if user_id:
                 await redis_client.expire(self._registry_key("user", user_id), self.registry_expiry)
 
+    async def registry_add_connection_if_under_limit(
+        self,
+        connection_id: str,
+        user_id: str | None,
+        metadata: dict[str, Any],
+        groups: set[str],
+        heartbeat_timeout: float,
+        max_connections: int,
+    ) -> bool:
+        """Atomically check connection limit and add connection if under limit.
+
+        Uses a Lua script to ensure atomicity across distributed servers.
+
+        Parameters
+        ----------
+        connection_id : str
+            Unique identifier for the connection
+        user_id : str | None
+            User identifier if authenticated, None for anonymous
+        metadata : dict[str, Any]
+            Additional connection metadata (IP, user agent, etc.)
+        groups : set[str]
+            Initial groups the connection belongs to
+        heartbeat_timeout : float
+            Heartbeat timeout in seconds
+        max_connections : int
+            Maximum total connections allowed
+
+        Returns
+        -------
+        bool
+            True if connection was added, False if limit would be exceeded
+
+        Notes
+        -----
+        Atomic operation prevents race conditions in distributed deployments.
+        Uses Redis Lua script for true atomicity across all server instances.
+
+        """
+        if not self.redis:
+            await self.connect()
+        assert self.redis is not None
+
+        redis_client: Any = self.redis
+        connections_key = self._registry_key("connections")
+        connection_key = self._registry_key("connection", connection_id)
+        user_key = self._registry_key("user", user_id) if user_id else None
+
+        # Lua script for atomic check-and-add
+        # Handles optional user_key by checking if it's provided in KEYS
+        lua_script = """
+        local connections_key = KEYS[1]
+        local connection_key = KEYS[2]
+        local user_key = #KEYS >= 3 and KEYS[3] or nil
+        local max_connections = tonumber(ARGV[1])
+        local connection_id = ARGV[2]
+        local user_id = ARGV[3]
+        local metadata = ARGV[4]
+        local heartbeat_timeout = ARGV[5]
+        local groups = ARGV[6]
+        local registry_expiry = ARGV[7]
+
+        -- Check current count
+        local current_count = redis.call('SCARD', connections_key)
+        if current_count >= max_connections then
+            return 0
+        end
+
+        -- Add connection atomically
+        redis.call('SADD', connections_key, connection_id)
+        redis.call('HSET', connection_key,
+            'user_id', user_id,
+            'metadata', metadata,
+            'heartbeat_timeout', heartbeat_timeout,
+            'groups', groups
+        )
+
+        -- Add to user set if user_key and user_id provided
+        if user_key and user_id ~= '' then
+            redis.call('SADD', user_key, connection_id)
+        end
+
+        -- Apply TTL if configured
+        if registry_expiry and registry_expiry ~= '' then
+            local expiry = tonumber(registry_expiry)
+            redis.call('EXPIRE', connections_key, expiry)
+            redis.call('EXPIRE', connection_key, expiry)
+            if user_key then
+                redis.call('EXPIRE', user_key, expiry)
+            end
+        end
+
+        return 1
+        """
+
+        keys = [connections_key, connection_key]
+        if user_key:
+            keys.append(user_key)
+
+        args = [
+            str(max_connections),
+            connection_id,
+            user_id or "",
+            json.dumps(metadata),
+            str(heartbeat_timeout),
+            json.dumps(list(groups)),
+            str(self.registry_expiry) if self.registry_expiry is not None else "",
+        ]
+
+        result = await redis_client.eval(lua_script, len(keys), *keys, *args)
+        return bool(result)
+
     async def registry_remove_connection(self, connection_id: str, user_id: str | None) -> None:
         """Remove connection from Redis registry.
 
@@ -433,6 +557,7 @@ class RedisBackend(BaseBackend):
         -----
         Removes connection from all registry sets and deletes connection hash.
         Cleans up user-connection mappings.
+
         """
         if not self.redis:
             return
@@ -458,6 +583,7 @@ class RedisBackend(BaseBackend):
         -----
         Updates groups field in connection hash.
         Refreshes TTL if configured.
+
         """
         if not self.redis:
             await self.connect()
@@ -491,6 +617,7 @@ class RedisBackend(BaseBackend):
         -----
         Deserializes groups from JSON stored in Redis hash.
         Returns empty set if connection not found or JSON invalid.
+
         """
         if not self.redis:
             await self.connect()
@@ -519,6 +646,7 @@ class RedisBackend(BaseBackend):
         -----
         Uses Redis SCARD to count connections set members.
         Includes connections from all server instances.
+
         """
         if not self.redis:
             await self.connect()
@@ -544,6 +672,7 @@ class RedisBackend(BaseBackend):
         -----
         Handles both string and bytes responses from Redis.
         Returns empty set if user has no connections.
+
         """
         if not self.redis:
             await self.connect()
@@ -565,6 +694,7 @@ class RedisBackend(BaseBackend):
         --------
         >>> backend.registry_get_prefix()
         'ws:registry:'
+
         """
         return f"{self.channel_prefix}registry:"
 
@@ -580,5 +710,6 @@ class RedisBackend(BaseBackend):
         -----
         Broadcast channel allows sending messages to all connections
         without explicitly managing groups. Requires Redis pub/sub.
+
         """
         return True

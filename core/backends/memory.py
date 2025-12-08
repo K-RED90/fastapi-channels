@@ -38,6 +38,7 @@ class MemoryBackend(BaseBackend):
     -----
     Not suitable for multi-server deployments due to lack of cross-server communication.
     All data is lost on process restart - use Redis backend for persistence.
+
     """
 
     def __init__(self):
@@ -64,6 +65,7 @@ class MemoryBackend(BaseBackend):
         -----
         Message is delivered asynchronously to all channel subscribers.
         If channel has no subscribers, message is silently dropped.
+
         """
         if channel in self.listeners:
             for queue in self.listeners[channel].copy():
@@ -81,6 +83,7 @@ class MemoryBackend(BaseBackend):
         -----
         Creates a message queue for the channel if it doesn't exist.
         Multiple subscriptions to the same channel share the same queue.
+
         """
         if channel not in self.channels:
             self.channels[channel] = asyncio.Queue()
@@ -100,6 +103,7 @@ class MemoryBackend(BaseBackend):
         -----
         Removes the channel's message queue and all listeners.
         Channel becomes unavailable for messaging after unsubscribe.
+
         """
         if channel in self.channels:
             queue = self.channels[channel]
@@ -120,6 +124,7 @@ class MemoryBackend(BaseBackend):
         -----
         Thread-safe operation using asyncio lock.
         Creates group if it doesn't exist.
+
         """
         async with self._lock:
             if group not in self.groups:
@@ -139,6 +144,7 @@ class MemoryBackend(BaseBackend):
         Notes
         -----
         Thread-safe operation. Removes empty groups automatically.
+
         """
         async with self._lock:
             if group in self.groups:
@@ -161,6 +167,7 @@ class MemoryBackend(BaseBackend):
         -------
         set[str]
             Set of channel names in the group
+
         """
         async with self._lock:
             return self._get_group_channels(group)
@@ -179,6 +186,7 @@ class MemoryBackend(BaseBackend):
         -----
         Publishes message to each channel in the group concurrently.
         Logs warnings for any failed deliveries but doesn't raise exceptions.
+
         """
         channels = self._get_group_channels(group)
         if not channels:
@@ -231,6 +239,7 @@ class MemoryBackend(BaseBackend):
         ------
         asyncio.TimeoutError
             If timeout is exceeded (handled internally)
+
         """
         if channel not in self.channels:
             return None
@@ -251,6 +260,7 @@ class MemoryBackend(BaseBackend):
         -------
         dict[str, Any] | None
             Next message from channel, or None if timeout exceeded
+
         """
         return await self.get_message(channel, timeout)
 
@@ -300,6 +310,7 @@ class MemoryBackend(BaseBackend):
         Notes
         -----
         Thread-safe operation. Maintains bidirectional user-connection mappings.
+
         """
         async with self._lock:
             self._registry_connections.add(connection_id)
@@ -311,6 +322,60 @@ class MemoryBackend(BaseBackend):
             }
             if user_id:
                 self._registry_user_connections[user_id].add(connection_id)
+
+    async def registry_add_connection_if_under_limit(
+        self,
+        connection_id: str,
+        user_id: str | None,
+        metadata: dict[str, Any],
+        groups: set[str],
+        heartbeat_timeout: float,
+        max_connections: int,
+    ) -> bool:
+        """Atomically check connection limit and add connection if under limit.
+
+        Parameters
+        ----------
+        connection_id : str
+            Unique identifier for the connection
+        user_id : str | None
+            User identifier if authenticated, None for anonymous
+        metadata : dict[str, Any]
+            Additional connection metadata (IP, user agent, etc.)
+        groups : set[str]
+            Initial groups the connection belongs to
+        heartbeat_timeout : float
+            Heartbeat timeout in seconds
+        max_connections : int
+            Maximum total connections allowed
+
+        Returns
+        -------
+        bool
+            True if connection was added, False if limit would be exceeded
+
+        Notes
+        -----
+        Atomic operation using asyncio lock prevents race conditions.
+        Since MemoryBackend is single-server only, this provides thread-safety
+        within a single process.
+
+        """
+        async with self._lock:
+            if len(self._registry_connections) >= max_connections:
+                return False
+
+            self._registry_connections.add(connection_id)
+            self._registry_connection_data[connection_id] = {
+                "user_id": user_id,
+                "metadata": metadata,
+                "groups": groups.copy(),
+                "heartbeat_timeout": heartbeat_timeout,
+            }
+            if user_id:
+                self._registry_user_connections[user_id].add(connection_id)
+
+        return True
 
     async def registry_remove_connection(self, connection_id: str, user_id: str | None) -> None:
         """Remove connection from in-memory registry.
@@ -325,6 +390,7 @@ class MemoryBackend(BaseBackend):
         Notes
         -----
         Thread-safe operation. Cleans up user-connection mappings.
+
         """
         async with self._lock:
             self._registry_connections.discard(connection_id)
@@ -347,6 +413,7 @@ class MemoryBackend(BaseBackend):
         Notes
         -----
         Thread-safe operation for dynamic group membership changes.
+
         """
         async with self._lock:
             if connection_id in self._registry_connection_data:
@@ -364,6 +431,7 @@ class MemoryBackend(BaseBackend):
         -------
         set[str]
             Set of group names the connection belongs to
+
         """
         async with self._lock:
             if connection_id in self._registry_connection_data:
@@ -377,6 +445,7 @@ class MemoryBackend(BaseBackend):
         -------
         int
             Number of active connections
+
         """
         async with self._lock:
             return len(self._registry_connections)
@@ -393,6 +462,7 @@ class MemoryBackend(BaseBackend):
         -------
         set[str]
             Set of connection IDs for the user
+
         """
         async with self._lock:
             return self._registry_user_connections.get(user_id, set()).copy()
@@ -404,6 +474,7 @@ class MemoryBackend(BaseBackend):
         -------
         str
             Registry prefix: "memory:registry:"
+
         """
         return "memory:registry:"
 
@@ -419,5 +490,6 @@ class MemoryBackend(BaseBackend):
         -----
         Memory backend is single-server only, no broadcast capability.
         Use Redis backend for broadcast functionality.
+
         """
         return False

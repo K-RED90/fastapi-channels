@@ -78,7 +78,6 @@ class TestWebSocketIntegration:
     @pytest.mark.asyncio
     async def test_full_chat_flow(self, setup_app):
         """Test complete chat flow with multiple users"""
-
         app, manager, consumers = setup_app
 
         # Create test client
@@ -163,7 +162,6 @@ class TestWebSocketIntegration:
     @pytest.mark.asyncio
     async def test_private_messaging(self, setup_app):
         """Test private messaging between users"""
-
         app, manager, consumers = setup_app
         client = TestClient(app)
 
@@ -203,7 +201,6 @@ class TestWebSocketIntegration:
     @pytest.mark.asyncio
     async def test_room_management(self, setup_app):
         """Test room creation and listing"""
-
         app, manager, consumers = setup_app
         client = TestClient(app)
 
@@ -240,7 +237,6 @@ class TestWebSocketIntegration:
     @pytest.mark.asyncio
     async def test_typing_indicators(self, setup_app):
         """Test typing indicators"""
-
         app, manager, consumers = setup_app
         client = TestClient(app)
 
@@ -271,7 +267,6 @@ class TestWebSocketIntegration:
     @pytest.mark.asyncio
     async def test_message_history(self, setup_app):
         """Test message history retrieval"""
-
         app, manager, consumers = setup_app
         client = TestClient(app)
 
@@ -305,7 +300,6 @@ class TestWebSocketIntegration:
     @pytest.mark.asyncio
     async def test_error_handling(self, setup_app):
         """Test error handling for invalid operations"""
-
         app, manager, consumers = setup_app
         client = TestClient(app)
 
@@ -334,7 +328,6 @@ class TestWebSocketIntegration:
     @pytest.mark.asyncio
     async def test_ping_pong(self, setup_app):
         """Test ping/pong functionality"""
-
         app, manager, consumers = setup_app
         client = TestClient(app)
 
