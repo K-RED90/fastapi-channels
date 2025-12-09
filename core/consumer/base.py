@@ -5,8 +5,7 @@ from typing import Any
 from core.connections.manager import ConnectionManager
 from core.connections.state import Connection
 from core.exceptions import (
-    AuthenticationError,
-    MessageError,
+    BaseError,
     ValidationError,
     create_error_context,
 )
@@ -297,6 +296,6 @@ class BaseConsumer:
                 details={"parse_error": str(e)},
             ) from e
 
-        except (AuthenticationError, ValidationError, MessageError) as e:
-            error_response = e.to_response()
-            await self.connection.websocket.send_json(error_response.to_dict())
+    async def handle_error(self, error: BaseError) -> None:
+        error_response = error.to_response()
+        await self.connection.websocket.send_json(error_response.to_dict())

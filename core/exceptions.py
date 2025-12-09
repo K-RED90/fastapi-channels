@@ -85,6 +85,7 @@ class BaseError(Exception, ABC):
         details: dict[str, Any] | None = None,
         retryable: bool = False,
         cause: Exception | None = None,
+        ws_code: int = 1011,
     ):
         super().__init__(message)
         self.message = message
@@ -95,6 +96,7 @@ class BaseError(Exception, ABC):
         self.details = details or {}
         self.retryable = retryable
         self.cause = cause
+        self.ws_code = ws_code
 
         if severity in (ErrorSeverity.CRITICAL, ErrorSeverity.HIGH):
             self._log_error()
@@ -135,12 +137,13 @@ class BaseError(Exception, ABC):
 
 
 class WebSocketError(BaseError):
-    def __init__(self, message: str, **kwargs):
+    def __init__(self, message: str, ws_code: int = 1011, **kwargs):
         super().__init__(
             message=message,
             error_code="WEBSOCKET_ERROR",
             category=ErrorCategory.SYSTEM,
             severity=ErrorSeverity.MEDIUM,
+            ws_code=ws_code,
             **kwargs,
         )
 
@@ -154,6 +157,7 @@ class ConnectionError(BaseError):
         message: str,
         error_code: str = "CONNECTION_ERROR",
         severity: ErrorSeverity = ErrorSeverity.HIGH,
+        ws_code: int = 1006,
         **kwargs,
     ):
         super().__init__(
@@ -161,6 +165,7 @@ class ConnectionError(BaseError):
             error_code=error_code,
             category=ErrorCategory.CONNECTION,
             severity=severity,
+            ws_code=ws_code,
             **kwargs,
         )
 
@@ -174,6 +179,7 @@ class MessageError(BaseError):
         message: str,
         error_code: str = "MESSAGE_ERROR",
         severity: ErrorSeverity = ErrorSeverity.MEDIUM,
+        ws_code: int = 1003,
         **kwargs,
     ):
         super().__init__(
@@ -181,6 +187,7 @@ class MessageError(BaseError):
             error_code=error_code,
             category=ErrorCategory.MESSAGE,
             severity=severity,
+            ws_code=ws_code,
             **kwargs,
         )
 
@@ -194,6 +201,7 @@ class BackendError(BaseError):
         message: str,
         error_code: str = "BACKEND_ERROR",
         severity: ErrorSeverity = ErrorSeverity.HIGH,
+        ws_code: int = 1011,
         **kwargs,
     ):
         super().__init__(
@@ -201,6 +209,7 @@ class BackendError(BaseError):
             error_code=error_code,
             category=ErrorCategory.BACKEND,
             severity=severity,
+            ws_code=ws_code,
             **kwargs,
         )
 
@@ -213,6 +222,7 @@ class AuthenticationError(BaseError):
         self,
         message: str = "Authentication required",
         error_code: str = "AUTHENTICATION_FAILED",
+        ws_code: int = 1008,
         **kwargs,
     ):
         super().__init__(
@@ -220,6 +230,7 @@ class AuthenticationError(BaseError):
             error_code=error_code,
             category=ErrorCategory.AUTHENTICATION,
             severity=ErrorSeverity.MEDIUM,
+            ws_code=ws_code,
             **kwargs,
         )
 
@@ -233,6 +244,7 @@ class ValidationError(BaseError):
         message: str,
         error_code: str = "VALIDATION_FAILED",
         severity: ErrorSeverity = ErrorSeverity.LOW,
+        ws_code: int = 1003,
         **kwargs,
     ):
         super().__init__(
@@ -240,6 +252,7 @@ class ValidationError(BaseError):
             error_code=error_code,
             category=ErrorCategory.VALIDATION,
             severity=severity,
+            ws_code=ws_code,
             **kwargs,
         )
 
@@ -252,6 +265,7 @@ class RateLimitError(BaseError):
         self,
         message: str = "Rate limit exceeded",
         error_code: str = "RATE_LIMIT_EXCEEDED",
+        ws_code: int = 1008,
         **kwargs,
     ):
         super().__init__(
@@ -260,6 +274,7 @@ class RateLimitError(BaseError):
             category=ErrorCategory.RATE_LIMIT,
             severity=ErrorSeverity.LOW,
             retryable=True,
+            ws_code=ws_code,
             **kwargs,
         )
 
@@ -274,6 +289,7 @@ class AuthorizationError(BaseError):
         self,
         message: str = "Insufficient permissions",
         error_code: str = "AUTHORIZATION_FAILED",
+        ws_code: int = 1008,
         **kwargs,
     ):
         super().__init__(
@@ -281,6 +297,7 @@ class AuthorizationError(BaseError):
             error_code=error_code,
             category=ErrorCategory.AUTHORIZATION,
             severity=ErrorSeverity.MEDIUM,
+            ws_code=ws_code,
             **kwargs,
         )
 
@@ -296,6 +313,7 @@ class SystemError(BaseError):
         message: str,
         error_code: str = "SYSTEM_ERROR",
         severity: ErrorSeverity = ErrorSeverity.HIGH,
+        ws_code: int = 1011,
         **kwargs,
     ):
         super().__init__(
@@ -303,6 +321,7 @@ class SystemError(BaseError):
             error_code=error_code,
             category=ErrorCategory.SYSTEM,
             severity=severity,
+            ws_code=ws_code,
             **kwargs,
         )
 
@@ -317,6 +336,7 @@ class TimeoutError(BaseError):
         self,
         message: str = "Operation timed out",
         error_code: str = "TIMEOUT_ERROR",
+        ws_code: int = 1011,
         **kwargs,
     ):
         super().__init__(
@@ -325,6 +345,7 @@ class TimeoutError(BaseError):
             category=ErrorCategory.SYSTEM,
             severity=ErrorSeverity.MEDIUM,
             retryable=True,
+            ws_code=ws_code,
             **kwargs,
         )
 

@@ -11,17 +11,20 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
+from redis.asyncio import Redis
 
 from core.backends.redis import RedisBackend
 from core.config import Settings
 from core.connections.manager import ConnectionManager
 from core.connections.registry import ConnectionRegistry
+from core.exceptions import BaseError
 from core.middleware.logging import LoggingMiddleware
+from core.middleware.rate_limit import RateLimitMiddleware
 from core.middleware.validation import ValidationMiddleware
 from example.consumers import ChatConsumer
 from example.database import ChatDatabase
 
-settings = Settings(WS_HEARTBEAT_INTERVAL=5)
+settings = Settings()
 
 logging.basicConfig(
     level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO),
@@ -42,7 +45,15 @@ manager = ConnectionManager(
     max_connections_per_client=settings.MAX_CONNECTIONS_PER_CLIENT,
     heartbeat_interval=settings.WS_HEARTBEAT_INTERVAL,
 )
-middleware = ValidationMiddleware(settings.WS_MAX_MESSAGE_SIZE) >> LoggingMiddleware()
+middleware = (
+    ValidationMiddleware(settings.WS_MAX_MESSAGE_SIZE)
+    >> LoggingMiddleware()
+    >> RateLimitMiddleware(
+        messages_per_window=10,
+        window_seconds=60,
+        redis=Redis.from_url(settings.REDIS_URL, encoding="utf-8", decode_responses=True),
+    )
+)
 
 db = ChatDatabase()
 
@@ -73,7 +84,6 @@ app.add_middleware(
 
 @app.websocket("/ws/{user_id}")
 async def websocket_endpoint(websocket: WebSocket, user_id: str):
-    """WebSocket endpoint for chat connections"""
     connection = await manager.connect(websocket=websocket, user_id=user_id)
 
     consumer = ChatConsumer(
@@ -93,8 +103,14 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
     except WebSocketDisconnect:
         await consumer.disconnect(1000)
         await manager.disconnect(connection.channel_name)
-    except Exception as e:
-        print(f"WebSocket error: {e}")
+    except BaseError as e:
+        if e.should_disconnect():
+            code = e.ws_code
+            await consumer.disconnect(code)
+            await manager.disconnect(connection.channel_name, code=code)
+        else:
+            await consumer.handle_error(e)
+    except Exception:
         await consumer.disconnect(1011)
         await manager.disconnect(connection.channel_name)
 

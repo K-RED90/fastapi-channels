@@ -184,8 +184,6 @@ class RateLimitMiddleware(Middleware):
     ----------
     next_middleware : Middleware | None, optional
         Next middleware in chain. Default: None
-    enabled : bool, optional
-        Enable rate limiting. Default: False
     messages_per_window : int, optional
         Maximum messages per window. Default: 100
     window_seconds : int, optional
@@ -214,7 +212,6 @@ class RateLimitMiddleware(Middleware):
     def __init__(
         self,
         next_middleware: Middleware | None = None,
-        enabled: bool = False,
         messages_per_window: int = 100,
         window_seconds: int = 60,
         burst_size: int = 100,
@@ -222,7 +219,6 @@ class RateLimitMiddleware(Middleware):
         key_prefix: str = "ratelimit:",
     ):
         super().__init__(next_middleware)
-        self.enabled = enabled
         self.messages_per_window = messages_per_window
         self.window_seconds = window_seconds
         self.burst_size = burst_size
@@ -255,13 +251,10 @@ class RateLimitMiddleware(Middleware):
         return True
 
     async def process(self, message, connection, consumer):
-        if not self.enabled:
-            return message
-
         if message.type in {"ping", "pong"}:
             return message
 
-        key = getattr(connection, "channel_name", None) or getattr(connection, "id", "unknown")
+        key = connection.channel_name
         if not await self._check_rate_limit(key):
             from core.exceptions import create_error_context
 

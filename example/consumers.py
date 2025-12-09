@@ -30,7 +30,9 @@ class ChatConsumer(BaseConsumer):
         self.max_message_history = 100
         self.max_message_length = 100000  # Support up to 100k characters
         self.max_room_name_length = 50
-        self.database = database  # In-memory SQLite database for persistent message and user/room storage
+        self.database = (
+            database  # In-memory SQLite database for persistent message and user/room storage
+        )
 
     async def connect(self) -> None:
         """Handle connection"""
@@ -59,7 +61,7 @@ class ChatConsumer(BaseConsumer):
                 "message": f"Welcome to the chat, {username}! Create or join a room to start chatting.",
                 "user_id": user_id,
                 "username": username,
-                "timestamp": time.time(),
+                "timestamp": self.timestamp,
             }
         )
 
@@ -88,7 +90,7 @@ class ChatConsumer(BaseConsumer):
                     "type": "user_left",
                     "user_id": user_id,
                     "username": username,
-                    "timestamp": time.time(),
+                    "timestamp": self.timestamp,
                 },
             )
 
@@ -242,7 +244,7 @@ class ChatConsumer(BaseConsumer):
             self.database.add_user_to_room(user_id, room)
             self.database.increment_room_user_count(room)
 
-        await self.send_json({"type": "room_joined", "room": room, "timestamp": time.time()})
+        await self.send_json({"type": "room_joined", "room": room, "timestamp": self.timestamp})
 
         await self.send_room_info(room)
 
@@ -254,7 +256,7 @@ class ChatConsumer(BaseConsumer):
                 "user_id": user_id,
                 "username": username,
                 "room": room,
-                "timestamp": time.time(),
+                "timestamp": self.timestamp,
             },
         )
 
@@ -283,7 +285,7 @@ class ChatConsumer(BaseConsumer):
             self.database.decrement_room_user_count(room)
 
         # Send confirmation
-        await self.send_json({"type": "room_left", "room": room, "timestamp": time.time()})
+        await self.send_json({"type": "room_left", "room": room, "timestamp": self.timestamp})
 
         # Notify others in room
         await self.send_to_group(
@@ -293,7 +295,7 @@ class ChatConsumer(BaseConsumer):
                 "user_id": user_id,
                 "username": username,
                 "room": room,
-                "timestamp": time.time(),
+                "timestamp": self.timestamp,
             },
         )
 
@@ -405,7 +407,7 @@ class ChatConsumer(BaseConsumer):
                     self.database.increment_room_user_count(room_name)
 
                 await self.send_json(
-                    {"type": "room_joined", "room": room_name, "timestamp": time.time()}
+                    {"type": "room_joined", "room": room_name, "timestamp": self.timestamp}
                 )
                 await self.send_room_info(room_name)
 
@@ -417,7 +419,7 @@ class ChatConsumer(BaseConsumer):
                         "user_id": user_id,
                         "username": username,
                         "room": room_name,
-                        "timestamp": time.time(),
+                        "timestamp": self.timestamp,
                     },
                 )
                 return
@@ -466,12 +468,14 @@ class ChatConsumer(BaseConsumer):
                 "type": "room_created",
                 "room": room_name,
                 "is_public": is_public,
-                "timestamp": time.time(),
+                "timestamp": self.timestamp,
             }
         )
 
         # Send room joined confirmation (so frontend knows user is now in the room)
-        await self.send_json({"type": "room_joined", "room": room_name, "timestamp": time.time()})
+        await self.send_json(
+            {"type": "room_joined", "room": room_name, "timestamp": self.timestamp}
+        )
 
         # Send room info
         await self.send_room_info(room_name)
@@ -496,7 +500,9 @@ class ChatConsumer(BaseConsumer):
                     }
                 )
 
-        await self.send_json({"type": "rooms_list", "rooms": rooms_list, "timestamp": time.time()})
+        await self.send_json(
+            {"type": "rooms_list", "rooms": rooms_list, "timestamp": self.timestamp}
+        )
 
     async def handle_get_room_users(self, message: Message) -> None:
         """Handle request to get users in a room"""
@@ -520,7 +526,12 @@ class ChatConsumer(BaseConsumer):
         users_in_room = self.database.get_room_users(room)
 
         await self.send_json(
-            {"type": "room_users", "room": room, "users": users_in_room, "timestamp": time.time()}
+            {
+                "type": "room_users",
+                "room": room,
+                "users": users_in_room,
+                "timestamp": self.timestamp,
+            }
         )
 
     async def handle_get_message_history(self, message: Message) -> None:
@@ -544,7 +555,12 @@ class ChatConsumer(BaseConsumer):
         history = self.database.get_recent_messages(room, limit=limit)
 
         await self.send_json(
-            {"type": "message_history", "room": room, "messages": history, "timestamp": time.time()}
+            {
+                "type": "message_history",
+                "room": room,
+                "messages": history,
+                "timestamp": self.timestamp,
+            }
         )
 
     async def handle_typing_start(self, message: Message) -> None:
@@ -578,7 +594,7 @@ class ChatConsumer(BaseConsumer):
                     "user_id": user_id,
                     "username": username,
                     "room": room,
-                    "timestamp": time.time(),
+                    "timestamp": self.timestamp,
                 },
             )
 
@@ -610,13 +626,13 @@ class ChatConsumer(BaseConsumer):
                     "user_id": user_id,
                     "username": username,
                     "room": room,
-                    "timestamp": time.time(),
+                    "timestamp": self.timestamp,
                 },
             )
 
     async def handle_ping(self, message: Message) -> None:
         """Handle ping message"""
-        await self.send_json({"type": "pong", "timestamp": time.time()})
+        await self.send_json({"type": "pong", "timestamp": self.timestamp})
 
     # Helper methods
 
@@ -627,7 +643,7 @@ class ChatConsumer(BaseConsumer):
                 "type": "error",
                 "message": error_message,
                 "message_type": message_type,
-                "timestamp": time.time(),
+                "timestamp": self.timestamp,
             }
         )
 
@@ -647,7 +663,7 @@ class ChatConsumer(BaseConsumer):
                 "user_count": room_info["user_count"],
                 "created_by": room_info.get("creator_username", "system"),
                 "is_public": room_info["is_public"],
-                "timestamp": time.time(),
+                "timestamp": self.timestamp,
             }
         )
 
@@ -656,3 +672,7 @@ class ChatConsumer(BaseConsumer):
         await self.manager.send_group_except(
             group, message, exclude_connection_id=self.connection.channel_name
         )
+
+    @property
+    def timestamp(self) -> float:
+        return time.time()
