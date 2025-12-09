@@ -30,7 +30,7 @@ class ChatConsumer(BaseConsumer):
         self.max_message_history = 100
         self.max_message_length = 100000  # Support up to 100k characters
         self.max_room_name_length = 50
-        self.database = database  # SQLite database for persistent message and user/room storage
+        self.database = database  # In-memory SQLite database for persistent message and user/room storage
 
     async def connect(self) -> None:
         """Handle connection"""
