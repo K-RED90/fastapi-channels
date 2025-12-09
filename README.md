@@ -13,7 +13,6 @@ A high-performance, distributed WebSocket messaging system built with FastAPI. F
 - **Heartbeat Monitoring**: Automatic connection health checks and dead connection cleanup
 - **Serialization**: Flexible message serialization (JSON, orjson, pickle)
 - **Structured Error Handling**: Typed error categories with contextual responses and retry hints
-- **REST & Persistence**: Optional REST endpoints plus pluggable storage (example ships with SQLite-backed history)
 - **Statistics & Monitoring**: Built-in connection statistics and activity tracking
 
 ## Architecture
