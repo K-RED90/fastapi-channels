@@ -12,7 +12,8 @@ A high-performance, distributed WebSocket messaging system built with FastAPI. A
 - **Middleware Support**: Chainable middleware for message processing, validation, rate limiting, and logging
 - **Heartbeat Monitoring**: Automatic connection health checks and dead connection cleanup
 - **Serialization**: Flexible message serialization (JSON, orjson, pickle)
-- **Error Handling**: Structured error responses with context and error codes
+- **Structured Error Handling**: Typed error categories with contextual responses and retry hints
+- **REST & Persistence**: Optional REST endpoints plus pluggable storage (example ships with SQLite-backed history)
 - **Statistics & Monitoring**: Built-in connection statistics and activity tracking
 
 ## Architecture
@@ -92,6 +93,7 @@ The central orchestrator for WebSocket connections. Manages:
 - Heartbeat monitoring and cleanup
 - Connection limits enforcement
 - Background task coordination (heartbeat, statistics, broadcast)
+- Optional toggles for background loops (`log_stats`, `enable_heartbeat`) and auto-generated `server_instance_id` for distributed tracing
 
 ### ConnectionRegistry
 
@@ -132,6 +134,13 @@ Chainable middleware for message processing:
 - **RateLimitMiddleware**: Rate limiting per connection/user
 - **LoggingMiddleware**: Request/response logging
 - Custom middleware support via `Middleware` base class
+
+### Error Handling System
+
+- `BaseError` with typed categories (authentication, authorization, validation, rate limit, connection, backend, message, system) and severity levels
+- Structured error context (error_id, timestamps, user/connection ids, message type, component, metadata)
+- Standardized responses via `ErrorResponse` with retry hints and WebSocket close codes
+- Concrete errors: `ConnectionError`, `MessageError`, `ValidationError`, `RateLimitError`, `AuthorizationError`, `SystemError`, `TimeoutError`, etc.
 
 ## Data Flow
 
@@ -186,8 +195,12 @@ REDIS_URL=redis://localhost:6379/0
 REDIS_CHANNEL_PREFIX=ws:
 WS_HEARTBEAT_INTERVAL=30             # seconds
 WS_HEARTBEAT_TIMEOUT=60              # seconds
-MAX_CONNECTIONS_PER_CLIENT=5
-MAX_TOTAL_CONNECTIONS=10000
+WS_MAX_MESSAGE_SIZE=10485760         # bytes (10MB)
+WS_RECONNECT_MAX_ATTEMPTS=5
+WS_RECONNECT_DELAY=5                 # seconds
+MAX_CONNECTIONS_PER_CLIENT=1000
+MAX_TOTAL_CONNECTIONS=200000
+MAX_TOTAL_GROUPS=5000000
 SERVER_INSTANCE_ID=server-abc123     # Auto-generated if not set
 LOG_LEVEL=INFO
 ```
@@ -197,236 +210,168 @@ LOG_LEVEL=INFO
 ### Complete Application Setup
 
 ```python
+import logging
+import os
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
+from redis.asyncio import Redis
+
+from core.backends.redis import RedisBackend
 from core.config import Settings
 from core.connections.manager import ConnectionManager
 from core.connections.registry import ConnectionRegistry
-from core.backends.redis import RedisBackend
-from core.backends.memory import MemoryBackend
-from core.consumer.base import BaseConsumer
-from core.middleware.validation import ValidationMiddleware
-from core.middleware.rate_limit import RateLimitMiddleware
+from core.exceptions import BaseError
 from core.middleware.logging import LoggingMiddleware
-from core.typed import Message
+from core.middleware.rate_limit import RateLimitMiddleware
+from core.middleware.validation import ValidationMiddleware
+from example.consumers import ChatConsumer
+from example.database import ChatDatabase
 
 # Load configuration from environment
 settings = Settings()
 
-# Choose backend based on configuration
-if settings.BACKEND_TYPE == "redis":
-    backend = RedisBackend(
-        redis_url=settings.REDIS_URL,
-        channel_prefix=settings.REDIS_CHANNEL_PREFIX,
-        registry_expiry=settings.REDIS_REGISTRY_EXPIRY,
-        group_expiry=settings.REDIS_GROUP_EXPIRY,
-    )
-else:
-    backend = MemoryBackend()
+logging.basicConfig(
+    level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO),
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
+
+# Redis backend for distributed usage (MemoryBackend also available)
+backend = RedisBackend(
+    redis_url=settings.REDIS_URL,
+    registry_expiry=settings.REDIS_REGISTRY_EXPIRY,
+    group_expiry=settings.REDIS_GROUP_EXPIRY,
+)
 
 # Initialize registry and manager
 registry = ConnectionRegistry(
+    backend=backend,
     max_connections=settings.MAX_TOTAL_CONNECTIONS,
     heartbeat_timeout=settings.WS_HEARTBEAT_TIMEOUT,
-    backend=backend,
 )
 
 manager = ConnectionManager(
     registry=registry,
     max_connections_per_client=settings.MAX_CONNECTIONS_PER_CLIENT,
     heartbeat_interval=settings.WS_HEARTBEAT_INTERVAL,
-    server_instance_id=settings.SERVER_INSTANCE_ID,
 )
 
 # Build middleware chain
 middleware = (
     ValidationMiddleware(settings.WS_MAX_MESSAGE_SIZE)
-    >> RateLimitMiddleware(enabled=True, messages_per_window=10, window_seconds=60)  # 10 messages per minute
     >> LoggingMiddleware()
+    >> RateLimitMiddleware(
+        messages_per_window=3,
+        window_seconds=60,
+        redis=Redis.from_url(settings.REDIS_URL, encoding="utf-8", decode_responses=True),
+        excluded_message_types={
+            "ping",
+            "pong",
+            "welcome",
+            "room_users",
+            "message_history",
+            "typing_start",
+            "typing_stop",
+            "list_rooms",
+        },
+    )
 )
 
-# Define consumer
-class ChatConsumer(BaseConsumer):
-    async def connect(self) -> None:
-        """Handle connection establishment"""
-        user_id = self.connection.user_id
-        
-        # Join default room
-        await self.join_group("general")
-        
-        # Send welcome message
-        await self.send_json({
-            "type": "welcome",
-            "message": f"Welcome, {user_id}!",
-            "user_id": user_id,
-        })
-        
-        # Notify others in room
-        await self.send_to_group("general", {
-            "type": "user_joined",
-            "user_id": user_id,
-        })
-    
-    async def receive(self, message: Message) -> None:
-        """Handle incoming messages"""
-        msg_type = message.type
+# Optional persistence layer
+db = ChatDatabase()
 
-        if msg_type == "chat_message":
-            # Send message to group
-            await self.send_to_group("general", {
-                "type": "chat_message",
-                "user_id": self.connection.user_id,
-                "text": message.data.get("text"),
-                "timestamp": message.data.get("timestamp"),
-            })
+template_path = os.path.join(os.path.dirname(__file__), "template.html")
+with open(template_path, encoding="utf-8") as f:
+    HTML_TEMPLATE = f.read()
 
-        elif msg_type == "join_room":
-            # Join a specific room
-            room = message.data.get("room")
-            if room:
-                await self.join_group(room)
-                await self.send_json({
-                    "type": "room_joined",
-                    "room": room,
-                })
 
-        elif msg_type == "leave_room":
-            # Leave a room
-            room = message.data.get("room")
-            if room and room in self.connection.groups:
-                await self.leave_group(room)
-                await self.send_json({
-                    "type": "room_left",
-                    "room": room,
-                })
-
-        elif msg_type == "private_message":
-            # Send personal message to another user
-            target_user_id = message.data.get("target_user_id")
-            text = message.data.get("text")
-
-            if target_user_id and text:
-                # Send to target user's connections
-                await self.manager.send_to_user(target_user_id, {
-                    "type": "private_message",
-                    "from_user_id": self.connection.user_id,
-                    "to_user_id": target_user_id,
-                    "text": text,
-                    "timestamp": message.data.get("timestamp"),
-                })
-
-        elif msg_type == "broadcast":
-            # Broadcast to all connections (admin feature)
-            await self.manager.broadcast({
-                "type": "announcement",
-                "message": message.data.get("message"),
-                "from_user_id": self.connection.user_id,
-                "timestamp": message.data.get("timestamp"),
-            })
-
-        elif msg_type == "typing_start":
-            # User started typing - notify others in room
-            room = message.data.get("room", "general")
-            if room in self.connection.groups:
-                await self.manager.send_group_except(
-                    room,
-                    {
-                        "type": "user_typing_start",
-                        "user_id": self.connection.user_id,
-                        "room": room,
-                        "timestamp": message.data.get("timestamp"),
-                    },
-                    exclude_connection_id=self.connection.channel_name,
-                )
-
-        elif msg_type == "typing_stop":
-            # User stopped typing - notify others in room
-            room = message.data.get("room", "general")
-            if room in self.connection.groups:
-                await self.manager.send_group_except(
-                    room,
-                    {
-                        "type": "user_typing_stop",
-                        "user_id": self.connection.user_id,
-                        "room": room,
-                        "timestamp": message.data.get("timestamp"),
-                    },
-                    exclude_connection_id=self.connection.channel_name,
-                )
-    
-    async def disconnect(self, code: int) -> None:
-        """Handle disconnection"""
-        # Leave all groups
-        for group in list(self.connection.groups):
-            await self.leave_group(group)
-
-        # Notify others
-        await self.send_to_group("general", {
-            "type": "user_left",
-            "user_id": self.connection.user_id,
-        })
-
-        await super().disconnect(code)
-
-# FastAPI application with lifespan management
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Start background tasks (heartbeat, statistics, broadcast)
+    """Startup and shutdown handlers"""
     await manager.start_tasks()
     yield
-    # Graceful shutdown
     await manager.stop_tasks()
+    db.close()
 
-app = FastAPI(title="AgentCore Chat", lifespan=lifespan)
+
+app = FastAPI(title="WebSocket Chat Example", lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 @app.websocket("/ws/{user_id}")
 async def websocket_endpoint(websocket: WebSocket, user_id: str):
-    # Establish connection
-    connection = await manager.connect(
-        websocket=websocket,
-        user_id=user_id,
-        metadata={"ip": websocket.client.host if websocket.client else None}
-    )
-    
-    # Create consumer with middleware
+    connection = await manager.connect(websocket=websocket, user_id=user_id)
+
     consumer = ChatConsumer(
         connection=connection,
         manager=manager,
         middleware_stack=middleware,
+        database=db,
     )
-    
+
     try:
-        # Call consumer connect hook
         await consumer.connect()
-        
-        # Message loop
+
         while True:
             raw_message = await websocket.receive_text()
             await consumer.handle_message(raw_message)
-    
+
     except WebSocketDisconnect:
-        # Normal disconnection
         await consumer.disconnect(1000)
         await manager.disconnect(connection.channel_name)
-    
-    except Exception as e:
-        # Error handling
-        print(f"WebSocket error: {e}")
-        await consumer.disconnect(1011)  # Internal error code
+    except BaseError as e:
+        if e.should_disconnect():
+            code = e.ws_code
+            await consumer.disconnect(code)
+            await manager.disconnect(connection.channel_name, code=code)
+        else:
+            await consumer.handle_error(e)
+    except Exception:
+        await consumer.disconnect(1011)
         await manager.disconnect(connection.channel_name)
+
+
+@app.get("/api/rooms/{room_name}/messages")
+async def get_room_messages(room_name: str, limit: int = 50):
+    """REST API endpoint to get message history for a room"""
+    if limit < 1 or limit > 1000:
+        raise HTTPException(status_code=400, detail="Limit must be between 1 and 1000")
+
+    messages = db.get_recent_messages(room_name, limit=limit)
+    return {"room": room_name, "messages": messages, "count": len(messages)}
+
+
+@app.get("/", response_class=HTMLResponse)
+async def get_frontend():
+    return HTML_TEMPLATE
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(app, host="0.0.0.0", port=8000)
 ```
 
 ### Key Features Demonstrated
 
-1. **Backend Selection**: Automatic backend selection based on configuration (Memory or Redis)
-2. **Configuration Management**: Using `Settings` class for environment-based configuration
-3. **Middleware Chain**: Chained middleware for validation, rate limiting, and logging
-4. **Group Messaging**: Join/leave groups and send messages to groups
-5. **Personal Messaging**: Send messages to specific users across all their connections
-6. **Broadcast Messaging**: Send messages to all active connections
-7. **Typing Indicators**: Real-time typing status notifications using `send_group_except` to exclude sender
-8. **Connection Lifecycle**: Proper connection establishment, message handling, and cleanup
-9. **Lifespan Management**: Background task management with FastAPI lifespan context
+1. **Distributed Backend**: Redis-backed registry/group storage with TTL control (MemoryBackend also available)
+2. **Configuration & Logging**: `Settings`-driven configuration plus centralized logging setup
+3. **Middleware Chain**: Validation, logging, and Redis-backed rate limiting with excluded message types
+4. **Structured Error Handling**: `BaseError` flow with `should_disconnect()` and retry-aware responses
+5. **REST Integration**: Message history endpoint (`/api/rooms/{room_name}/messages`) with validation
+6. **Persistence**: Optional SQLite-backed `ChatDatabase` for messages/users/rooms
+7. **Messaging Patterns**: Group, personal, and broadcast messaging via consumer helpers
+8. **Frontend Delivery**: CORS-enabled FastAPI app serving the bundled HTML chat client
+9. **Lifespan Tasks**: Heartbeat/statistics startup & shutdown via FastAPI lifespan handlers
 
 ## Key Design Decisions
 
