@@ -32,6 +32,8 @@ class TestChatConsumer:
     def test_chat_consumer_creation(self):
         """Test that ChatConsumer can be instantiated"""
         from core.backends.memory import MemoryBackend
+        from core.middleware.logging import LoggingMiddleware
+        from core.middleware.validation import ValidationMiddleware
         from example.consumers import ChatConsumer
 
         # Create minimal mocks
@@ -42,14 +44,20 @@ class TestChatConsumer:
         manager = Mock()
         backend = MemoryBackend()
 
-        consumer = ChatConsumer(connection=connection, manager=manager, backend=backend)
+        middleware_stack = (
+            ValidationMiddleware(max_message_size=10 * 1024 * 1024) | LoggingMiddleware()
+        )
+
+        consumer = ChatConsumer(
+            connection=connection, manager=manager, middleware_stack=middleware_stack
+        )
 
         assert consumer.connection == connection
         assert consumer.manager == manager
-        assert consumer.backend == backend
-        assert hasattr(consumer, "users")
-        assert hasattr(consumer, "rooms")
-        assert hasattr(consumer, "message_history")
+
+        assert hasattr(consumer, "typing_users")
+        assert hasattr(consumer, "max_message_history")
+        assert hasattr(consumer, "max_message_length")
 
     def test_message_creation(self):
         """Test Message object creation and methods"""
@@ -105,7 +113,7 @@ class TestChatConsumer:
 
         from core.typed import Message
 
-        middleware = ValidationMiddleware(max_message_size=1000)
+        middleware = ValidationMiddleware(max_message_size=10 * 1024 * 1024)  # 10MB
 
         # Create test message
         message = Message(type="test", data={"text": "short message"})
@@ -123,8 +131,8 @@ class TestChatConsumer:
             result = loop.run_until_complete(middleware.process(message, connection, consumer))
             assert result == message
 
-            # Test oversized message
-            big_message = Message(type="test", data={"text": "x" * 200})
+            # Test oversized message (11MB > 10MB limit)
+            big_message = Message(type="test", data={"text": "x" * (11 * 1024 * 1024)})
             try:
                 result = loop.run_until_complete(
                     middleware.process(big_message, connection, consumer)
@@ -133,7 +141,11 @@ class TestChatConsumer:
                 # In real usage, the consumer would catch this
             except Exception as e:
                 # Exception is expected - either ValidationError or handled by consumer
-                assert "ValidationError" in str(type(e).__name__) or "error" in str(e).lower()
+                assert (
+                    "ValidationError" in str(type(e).__name__)
+                    or "error" in str(e).lower()
+                    or "too large" in str(e).lower()
+                )
 
         finally:
             loop.close()

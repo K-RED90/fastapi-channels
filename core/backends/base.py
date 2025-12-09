@@ -1,7 +1,17 @@
 import asyncio
 import uuid
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, TypedDict
+
+
+class CleanupStats(TypedDict):
+    connections_removed: int
+    user_mappings_cleaned: int
+
+
+class OrphanedGroupMembersStats(TypedDict):
+    orphaned_members_removed: int
+    empty_groups_removed: int
 
 
 class BaseBackend(ABC):
@@ -110,7 +120,9 @@ class BaseBackend(ABC):
         """
 
     @abstractmethod
-    async def group_send(self, group: str, message: dict[str, Any]) -> None:
+    async def group_send(
+        self, group: str, message: dict[str, Any], exclude_channel: str | None = None
+    ) -> None:
         """Send a message to all channels in a group.
 
         Parameters
@@ -119,11 +131,14 @@ class BaseBackend(ABC):
             Target group name
         message : dict[str, Any]
             Message payload to deliver
+        exclude_channel : str | None, optional
+            Channel to exclude from delivery. Default: None
 
         Notes
         -----
         This is equivalent to publishing to each channel in the group.
         Failed deliveries should be logged but not raise exceptions.
+        If exclude_channel is provided, that channel will not receive the message.
 
         """
 
@@ -446,3 +461,36 @@ class BaseBackend(ABC):
 
         """
         return False
+
+    async def cleanup_stale_connections(
+        self, server_instance_id: str, timeout: float | None = 30
+    ) -> CleanupStats:
+        """Clean up stale connections.
+
+        Parameters
+        ----------
+        server_instance_id : str
+            Server instance ID to cleanup stale connections for
+        timeout : float | None
+            Maximum seconds to spend before aborting; None disables timeout.
+
+        """
+        return CleanupStats(connections_removed=0, user_mappings_cleaned=0)
+
+    async def cleanup_orphaned_group_members(
+        self, timeout: float | None = 30
+    ) -> OrphanedGroupMembersStats:
+        """Clean up orphaned group members.
+
+        Parameters
+        ----------
+        timeout : float | None
+            Maximum seconds to spend before aborting; None disables timeout.
+
+        Returns
+        -------
+        OrphanedGroupMembersStats
+            Statistics about cleaned items.
+
+        """
+        return OrphanedGroupMembersStats(orphaned_members_removed=0, empty_groups_removed=0)

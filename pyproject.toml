@@ -20,6 +20,9 @@ python_classes = "Test*"
 python_functions = "test_*"
 addopts = "-v --tb=short"
 
+[tool.hatch.build.targets.wheel]
+packages = ["core", "example"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"

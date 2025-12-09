@@ -26,10 +26,10 @@ class Settings(BaseSettings):
 
     REDIS_REGISTRY_EXPIRY : int | None
         TTL in seconds for registry keys (connections, users) in Redis.
-        None means no expiry. Default: None
+        None means no expiry. Default: 3600
 
     REDIS_GROUP_EXPIRY : int | None
-        TTL in seconds for group keys in Redis. None means no expiry. Default: None
+        TTL in seconds for group keys in Redis. None means no expiry. Default: 3600
 
     WS_HEARTBEAT_INTERVAL : int
         Interval in seconds between heartbeat pings. Default: 30
@@ -38,7 +38,7 @@ class Settings(BaseSettings):
         Timeout in seconds before considering a connection dead. Default: 60
 
     WS_MAX_MESSAGE_SIZE : int
-        Maximum message size in bytes. Default: 1MB (1024*1024)
+        Maximum message size in bytes. Default: 10MB (10*1024*1024)
 
     WS_RECONNECT_MAX_ATTEMPTS : int
         Maximum number of reconnection attempts. Default: 5
@@ -47,10 +47,13 @@ class Settings(BaseSettings):
         Delay in seconds between reconnection attempts. Default: 5
 
     MAX_CONNECTIONS_PER_CLIENT : int
-        Maximum concurrent connections per user. Default: 5
+        Maximum concurrent connections per user. Default: 1000
 
     MAX_TOTAL_CONNECTIONS : int
-        Maximum total connections across all users. Default: 10000
+        Maximum total connections across all users. Default: 200000
+
+    MAX_TOTAL_GROUPS : int
+        Maximum total groups/channels across all rooms. Default: 5000000
 
     SERVER_INSTANCE_ID : str | None
         Unique identifier for this server instance in distributed deployments.
@@ -80,19 +83,18 @@ class Settings(BaseSettings):
     BACKEND_TYPE: Literal["memory", "redis"] = "memory"
     REDIS_URL: str = "redis://localhost:6379/0"
     REDIS_CHANNEL_PREFIX: str = "ws:"
-    REDIS_REGISTRY_EXPIRY: int | None = (
-        None  # TTL in seconds for registry keys (connections, users)
-    )
-    REDIS_GROUP_EXPIRY: int | None = None  # TTL in seconds for group keys
+    REDIS_REGISTRY_EXPIRY: int | None = 3600  # TTL in seconds for registry keys
+    REDIS_GROUP_EXPIRY: int | None = 3600  # TTL in seconds for group keys
 
     WS_HEARTBEAT_INTERVAL: int = 30  # seconds
     WS_HEARTBEAT_TIMEOUT: int = 60  # seconds
-    WS_MAX_MESSAGE_SIZE: int = 1024 * 1024  # 1MB
+    WS_MAX_MESSAGE_SIZE: int = 10 * 1024 * 1024  # 10MB
     WS_RECONNECT_MAX_ATTEMPTS: int = 5
     WS_RECONNECT_DELAY: int = 5  # seconds
 
-    MAX_CONNECTIONS_PER_CLIENT: int = 5
-    MAX_TOTAL_CONNECTIONS: int = 10000
+    MAX_CONNECTIONS_PER_CLIENT: int = 1000
+    MAX_TOTAL_CONNECTIONS: int = 200000
+    MAX_TOTAL_GROUPS: int = 5000000
 
     SERVER_INSTANCE_ID: str | None = None
 

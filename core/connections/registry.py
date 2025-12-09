@@ -217,7 +217,7 @@ class ConnectionRegistry:
         """
         return list(self.connections.values())
 
-    async def iter_connections(self, batch_size: int = 100) -> AsyncIterator[list[Connection]]:
+    async def iter_connections(self, batch_size: int = 100) -> AsyncIterator[tuple[Connection, ...]]:
         """Stream connections in batches to avoid loading all into memory.
 
         Parameters
@@ -227,7 +227,7 @@ class ConnectionRegistry:
 
         Yields
         ------
-        list[Connection]
+        tuple[Connection, ...]
             Batch of Connection objects
 
         Notes
@@ -247,13 +247,8 @@ class ConnectionRegistry:
         """
         from core.utils import batch_items
 
-        connection_ids = list(self.connections.keys())
-        for batch_ids in batch_items(connection_ids, batch_size):
-            batch = [
-                self.connections[conn_id] for conn_id in batch_ids if conn_id in self.connections
-            ]
-            if batch:
-                yield batch
+        for batch in batch_items(self.connections.values(), batch_size):
+            yield batch
 
     async def count(self) -> int:
         """Get total connection count across all servers.
@@ -316,27 +311,6 @@ class ConnectionRegistry:
             await self.backend.registry_update_groups(
                 connection_id=connection_id, groups=connection.groups
             )
-
-    def get_by_group(self, group: str) -> list[Connection]:
-        """Get all local connections in a group.
-
-        Parameters
-        ----------
-        group : str
-            Group name to query
-
-        Returns
-        -------
-        list[Connection]
-            List of Connection objects in the group (local only)
-
-        Notes
-        -----
-        Returns only connections from this server instance.
-        Use backend.group_channels() for cross-server group members.
-
-        """
-        return [conn for conn in self.connections.values() if group in conn.groups]
 
     async def user_channels(self, user_id: str) -> set[str]:
         """Get all connection channel names for a user across all servers.

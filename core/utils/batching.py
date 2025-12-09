@@ -7,13 +7,14 @@ of large datasets, concurrency limiting, and memory-efficient streaming operatio
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator
 from dataclasses import dataclass, field
+from itertools import islice
 from typing import Any, Generic, TypeVar
 
 T = TypeVar("T")
 R = TypeVar("R")
 
 
-def batch_items(items: Iterable[T], batch_size: int) -> Iterator[list[T]]:
+def batch_items(items: Iterable[T], batch_size: int, strict: bool = False) -> Iterator[tuple[T, ...]]:
     """Split an iterable into batches of specified size.
 
     Parameters
@@ -25,22 +26,22 @@ def batch_items(items: Iterable[T], batch_size: int) -> Iterator[list[T]]:
 
     Yields
     ------
-    list[T]
+    tuple[T, ...]
         Batch of items (last batch may be smaller)
 
     Examples
     --------
     >>> list(batch_items([1, 2, 3, 4, 5], batch_size=2))
-    [[1, 2], [3, 4], [5]]
+    [(1, 2), (3, 4), (5,)]
 
     """
-    batch: list[T] = []
-    for item in items:
-        batch.append(item)
-        if len(batch) >= batch_size:
-            yield batch
-            batch = []
-    if batch:
+    
+    if batch_size < 1:
+        raise ValueError('n must be at least one')
+    iterator = iter(items)
+    while batch := tuple(islice(iterator, batch_size)):
+        if strict and len(batch) != batch_size:
+            raise ValueError('batch_items(): incomplete batch')
         yield batch
 
 

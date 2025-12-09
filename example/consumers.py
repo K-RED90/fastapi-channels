@@ -1,21 +1,34 @@
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from core.consumer.base import BaseConsumer
 from core.typed import Message
+
+if TYPE_CHECKING:
+    from core.connections.manager import ConnectionManager
+    from core.connections.state import Connection
+    from core.middleware.base import Middleware
 
 
 class ChatConsumer(BaseConsumer):
     """Example chat consumer implementation with full chat features"""
 
-    def __init__(self, *args, database=None, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(
+        self,
+        connection: "Connection",
+        manager: "ConnectionManager",
+        middleware_stack: "Middleware | None" = None,
+        database: Any = None,
+        *args,
+        **kwargs,
+    ):
+        super().__init__(connection, manager, middleware_stack)
         # Typing indicators stored in-memory per consumer instance
         # NOTE: For production multi-server deployments, consider using Redis backend
         # to store typing indicators for cross-server synchronization
         self.typing_users: dict[str, list[str]] = {}  # room_name -> typing user_ids
         self.max_message_history = 100
-        self.max_message_length = 1000
+        self.max_message_length = 100000  # Support up to 100k characters
         self.max_room_name_length = 50
         self.database = database  # SQLite database for persistent message and user/room storage
 
@@ -391,7 +404,9 @@ class ChatConsumer(BaseConsumer):
                     self.database.add_user_to_room(user_id, room_name)
                     self.database.increment_room_user_count(room_name)
 
-                await self.send_json({"type": "room_joined", "room": room_name, "timestamp": time.time()})
+                await self.send_json(
+                    {"type": "room_joined", "room": room_name, "timestamp": time.time()}
+                )
                 await self.send_room_info(room_name)
 
                 # Notify others in room

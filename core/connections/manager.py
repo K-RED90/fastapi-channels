@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import json
+import logging
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -82,6 +83,7 @@ class ConnectionManager:
         max_connections_per_client: int = 10000,
         heartbeat_interval: int = 30,
         server_instance_id: str | None = None,
+        log_stats: bool = True,
     ):
         self._registry = registry
         self._receiver_tasks: dict[str, asyncio.Task] = {}
@@ -94,6 +96,7 @@ class ConnectionManager:
         self._broadcast_channel = "__broadcast__"
         # Generate server instance ID if not provided
         self.server_instance_id = server_instance_id or self._generate_instance_id()
+        self.log_stats = log_stats
 
     @staticmethod
     def _generate_instance_id() -> str:
@@ -311,16 +314,11 @@ class ConnectionManager:
         Notes
         -----
         Useful for echo prevention in chat applications.
-        Gets group members from local registry for exclusion logic.
+        Uses backend group_send for efficient multi-connection delivery across all servers.
+        Avoids loading all connections into memory by using backend streaming.
 
         """
-        connections = self.registry.get_by_group(group)
-        tasks = [
-            self._safe_send_json(conn, message)
-            for conn in connections
-            if conn.channel_name != exclude_connection_id
-        ]
-        await run_with_concurrency_limit(tasks, max_concurrent=100, return_exceptions=True)
+        await self.backend.group_send(group, message, exclude_channel=exclude_connection_id)
 
     async def broadcast(self, message: dict[str, Any]) -> None:
         """Send message to all active connections.
@@ -474,8 +472,22 @@ class ConnectionManager:
         if self._running:
             return
         self._running = True
+
+        connection_stats = await self.backend.cleanup_stale_connections(self.server_instance_id)
+        group_stats = await self.backend.cleanup_orphaned_group_members()
+        logging.info(
+            "Redis cleanup completed: connections_removed=%s user_mappings_cleaned=%s "
+            "orphaned_members_removed=%s empty_groups_removed=%s",
+            connection_stats["connections_removed"],
+            connection_stats["user_mappings_cleaned"],
+            group_stats["orphaned_members_removed"],
+            group_stats["empty_groups_removed"],
+        )
+
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
-        self._stats_task = asyncio.create_task(self._stats_loop())
+        if self.log_stats:
+            self._stats_task = asyncio.create_task(self._stats_loop())
+
         if self.backend.supports_broadcast_channel():
             try:
                 await self.backend.subscribe(self._broadcast_channel)
@@ -628,10 +640,12 @@ class ConnectionManager:
                         if c.user_id:
                             unique_users.add(c.user_id)
 
-                print(
-                    f"[ws] stats connections={total_connections} "
-                    f"users={len(unique_users)} "
-                    f"messages={total_msgs} bytes={total_bytes}"
+                logging.info(
+                    "[ws] stats connections=%s users=%s messages=%s bytes=%s",
+                    total_connections,
+                    len(unique_users),
+                    total_msgs,
+                    total_bytes,
                 )
             except asyncio.CancelledError:
                 break

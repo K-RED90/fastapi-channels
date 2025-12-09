@@ -1,7 +1,7 @@
 import asyncio
 import json
 from collections import defaultdict
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable
 from typing import TYPE_CHECKING, Any, Optional, TypeVar
 
 from redis.asyncio import Redis
@@ -13,7 +13,7 @@ from redis.exceptions import TimeoutError as RedisTimeoutError
 from core.serializers import JSONSerializer
 from core.utils import with_retry
 
-from .base import BaseBackend
+from .base import BaseBackend, CleanupStats, OrphanedGroupMembersStats
 
 if TYPE_CHECKING:
     from core.serializers import BaseSerializer
@@ -125,6 +125,11 @@ class RedisBackend(BaseBackend):
         self._pending_receives: dict[str, list[asyncio.Future]] = defaultdict(list)
         self._connection_pool: ConnectionPool | None = None
 
+    async def _with_optional_timeout(self, coro: Awaitable[T], timeout: float | None) -> T:
+        if timeout is None:
+            return await coro
+        return await asyncio.wait_for(coro, timeout=timeout)
+
     async def connect(self) -> None:
         """Establish connection to Redis server with connection pooling.
 
@@ -147,7 +152,6 @@ class RedisBackend(BaseBackend):
         - health_check_interval: Connection health check interval (default: 30s)
 
         """
-        # Create connection pool with configured settings
         self._connection_pool = ConnectionPool.from_url(
             self.redis_url,
             max_connections=self.max_connections,
@@ -163,7 +167,6 @@ class RedisBackend(BaseBackend):
         self.pubsub = self.redis.pubsub()
 
     def _get_retry_decorator(self):
-        """Get a retry decorator configured with this instance's retry settings."""
         return with_retry(
             max_retries=self.retry_max_attempts,
             base_delay=self.retry_base_delay,
@@ -255,7 +258,9 @@ class RedisBackend(BaseBackend):
         full_channel = f"{self.channel_prefix}{channel}"
         await self.pubsub.unsubscribe(full_channel)
 
-    async def group_send(self, group: str, message: dict[str, Any]) -> None:
+    async def group_send(
+        self, group: str, message: dict[str, Any], exclude_channel: str | None = None
+    ) -> None:
         """Send message to all channels in Redis group.
 
         Parameters
@@ -264,12 +269,15 @@ class RedisBackend(BaseBackend):
             Target group name
         message : dict[str, Any]
             Message payload to deliver
+        exclude_channel : str | None, optional
+            Channel to exclude from delivery. Default: None
 
         Notes
         -----
         Uses streaming with SSCAN to avoid loading all members into memory.
         Uses Redis pipeline for efficient batch publishing within each batch.
         Handles exceptions gracefully - failed publishes are ignored.
+        If exclude_channel is provided, that channel will not receive the message.
 
         """
         if not self.redis:
@@ -281,15 +289,22 @@ class RedisBackend(BaseBackend):
 
         # Stream group members in batches and use pipeline for each batch
         async for batch in self.group_channels_stream(group, batch_size=100):
+            # Filter out excluded channel if specified
+            filtered_batch = (
+                [ch for ch in batch if ch != exclude_channel] if exclude_channel else batch
+            )
+            if not filtered_batch:
+                continue
+
             pipe = redis_client.pipeline()
-            for channel in batch:
+            for channel in filtered_batch:
                 full_channel = f"{self.channel_prefix}{channel}"
                 pipe.publish(full_channel, serialized)
             try:
                 await pipe.execute()
             except Exception:
                 # Fallback to individual publishes if pipeline fails
-                for channel in batch:
+                for channel in filtered_batch:
                     try:
                         await self.publish(channel, message)
                     except Exception:
@@ -946,6 +961,207 @@ class RedisBackend(BaseBackend):
 
         """
         return f"{self.channel_prefix}registry:"
+
+    async def cleanup_stale_connections(
+        self, server_instance_id: str, timeout: float | None = 30
+    ) -> CleanupStats:
+        """Remove stale connection registry entries for other servers or expired TTLs.
+
+        Parameters
+        ----------
+        server_instance_id : str
+            Identifier for the current server instance. Connections associated
+            with a different server instance are treated as stale.
+
+        Returns
+        -------
+        CleanupStats
+            Statistics about cleaned items.
+
+        """
+
+        async def _run() -> CleanupStats:
+            if not self.redis:
+                await self.connect()
+            assert self.redis is not None
+
+            redis_client: Any = self.redis
+            connections_key = self._registry_key("connections")
+            stats: CleanupStats = {"connections_removed": 0, "user_mappings_cleaned": 0}
+            cursor = 0
+            batch_size = 100
+
+            while True:
+                cursor, raw_conn_ids = await redis_client.sscan(
+                    connections_key, cursor=cursor, count=batch_size
+                )
+                conn_ids = [
+                    cid.decode() if isinstance(cid, (bytes, bytearray)) else str(cid)
+                    for cid in raw_conn_ids
+                ]
+                if not conn_ids and cursor == 0:
+                    break
+
+                pipe = redis_client.pipeline()
+                for conn_id in conn_ids:
+                    conn_key = self._registry_key("connection", conn_id)
+                    pipe.hgetall(conn_key)
+                    pipe.ttl(conn_key)
+                results = await pipe.execute()
+
+                stale_entries: list[tuple[str, str | None, list[str]]] = []
+
+                for idx, conn_id in enumerate(conn_ids):
+                    data = results[idx * 2]
+                    ttl = results[idx * 2 + 1]
+
+                    if not data:
+                        stale_entries.append((conn_id, None, []))
+                        continue
+
+                    decoded_data = {
+                        (k.decode() if isinstance(k, (bytes, bytearray)) else str(k)): (
+                            v.decode() if isinstance(v, (bytes, bytearray)) else v
+                        )
+                        for k, v in data.items()
+                    }
+
+                    metadata_raw = decoded_data.get("metadata") or ""
+                    user_id_raw = decoded_data.get("user_id") or ""
+                    groups_raw = decoded_data.get("groups") or "[]"
+
+                    try:
+                        metadata = json.loads(metadata_raw) if metadata_raw else {}
+                    except json.JSONDecodeError:
+                        metadata = {}
+
+                    try:
+                        groups_list = json.loads(groups_raw) if groups_raw else []
+                    except json.JSONDecodeError:
+                        groups_list = []
+
+                    stored_instance = metadata.get("server_instance_id")
+
+                    ttl_stale = False
+                    if self.registry_expiry is not None:
+                        # ttl < 0 means missing/expired (includes no-ttl and expired)
+                        ttl_stale = ttl is None or ttl <= 0
+
+                    # Connections without instance metadata or belonging to a different
+                    # server instance are considered stale regardless of TTL to prevent
+                    # accumulation after crashes/restarts.
+                    instance_stale = (
+                        stored_instance is None or stored_instance != server_instance_id
+                    )
+
+                    if ttl_stale or instance_stale:
+                        user_id = user_id_raw or None
+                        stale_entries.append((conn_id, user_id, groups_list))
+
+                if stale_entries:
+                    delete_pipe = redis_client.pipeline()
+                    for conn_id, user_id, groups in stale_entries:
+                        conn_key = self._registry_key("connection", conn_id)
+                        delete_pipe.srem(connections_key, conn_id)
+                        delete_pipe.delete(conn_key)
+                        if user_id:
+                            delete_pipe.srem(self._registry_key("user", user_id), conn_id)
+                            stats["user_mappings_cleaned"] += 1
+                        for group in groups:
+                            delete_pipe.srem(f"{self.channel_prefix}group:{group}", conn_id)
+
+                    try:
+                        await delete_pipe.execute()
+                    except Exception:
+                        pass
+
+                    stats["connections_removed"] += len(stale_entries)
+
+                if cursor == 0:
+                    break
+
+            return stats
+
+        return await self._with_optional_timeout(_run(), timeout)
+
+    async def cleanup_orphaned_group_members(
+        self, timeout: float | None = 30
+    ) -> OrphanedGroupMembersStats:
+        async def _run() -> OrphanedGroupMembersStats:
+            if not self.redis:
+                await self.connect()
+            assert self.redis is not None
+
+            redis_client: Any = self.redis
+            stats: OrphanedGroupMembersStats = {
+                "orphaned_members_removed": 0,
+                "empty_groups_removed": 0,
+            }
+            cursor = 0
+            batch_size = 100
+
+            pattern = f"{self.channel_prefix}group:*"
+
+            while True:
+                cursor, group_keys = await redis_client.scan(
+                    cursor=cursor, match=pattern, count=100
+                )
+                if not group_keys and cursor == 0:
+                    break
+
+                for raw_group_key in group_keys:
+                    group_key = (
+                        raw_group_key.decode()
+                        if isinstance(raw_group_key, (bytes, bytearray))
+                        else str(raw_group_key)
+                    )
+
+                    member_cursor = 0
+                    while True:
+                        member_cursor, members = await redis_client.sscan(
+                            group_key, cursor=member_cursor, count=batch_size
+                        )
+                        members_str = [
+                            m.decode() if isinstance(m, (bytes, bytearray)) else str(m)
+                            for m in members
+                        ]
+
+                        if members_str:
+                            pipe = redis_client.pipeline()
+                            for member in members_str:
+                                pipe.exists(self._registry_key("connection", member))
+                            exists_results = await pipe.execute()
+
+                            delete_pipe = redis_client.pipeline()
+                            for member, exists in zip(members_str, exists_results):
+                                if not exists:
+                                    delete_pipe.srem(group_key, member)
+                                    stats["orphaned_members_removed"] += 1
+
+                            if delete_pipe.command_stack:
+                                try:
+                                    await delete_pipe.execute()
+                                except Exception:
+                                    pass
+
+                        if member_cursor == 0:
+                            break
+
+                    # Remove group if empty
+                    try:
+                        group_size = await redis_client.scard(group_key)
+                        if group_size == 0:
+                            await redis_client.delete(group_key)
+                            stats["empty_groups_removed"] += 1
+                    except Exception:
+                        pass
+
+                if cursor == 0:
+                    break
+
+            return stats
+
+        return await self._with_optional_timeout(_run(), timeout)
 
     def supports_broadcast_channel(self) -> bool:
         """Check if backend supports broadcast channel.

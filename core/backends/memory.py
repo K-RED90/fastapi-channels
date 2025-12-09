@@ -174,7 +174,9 @@ class MemoryBackend(BaseBackend):
         async with self._lock:
             return self._get_group_channels(group)
 
-    async def group_send(self, group: str, message: dict[str, Any]) -> None:
+    async def group_send(
+        self, group: str, message: dict[str, Any], exclude_channel: str | None = None
+    ) -> None:
         """Send message to all channels in a group.
 
         Parameters
@@ -183,16 +185,24 @@ class MemoryBackend(BaseBackend):
             Target group name
         message : dict[str, Any]
             Message payload to deliver
+        exclude_channel : str | None, optional
+            Channel to exclude from delivery. Default: None
 
         Notes
         -----
         Publishes message to each channel in the group concurrently.
         Logs warnings for any failed deliveries but doesn't raise exceptions.
+        If exclude_channel is provided, that channel will not receive the message.
 
         """
         channels = self._get_group_channels(group)
         if not channels:
             return
+
+        if exclude_channel:
+            channels = {ch for ch in channels if ch != exclude_channel}
+            if not channels:
+                return
 
         tasks = [self.publish(channel, message) for channel in channels]
         results = await run_with_concurrency_limit(
