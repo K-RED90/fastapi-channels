@@ -10,9 +10,8 @@ from redis.asyncio import Redis
 
 from example.consumers import ChatConsumer
 from example.database import ChatDatabase
-from fastapi_channels.backends import MemoryBackend, RedisBackend
-from fastapi_channels.config import Settings
-from fastapi_channels.connections import ConnectionManager, ConnectionRegistry
+from fastapi_channels.config import WSConfig
+from fastapi_channels.connections import ConnectionManager
 from fastapi_channels.middleware import LoggingMiddleware, ValidationMiddleware
 
 
@@ -22,16 +21,15 @@ class TestWebSocketIntegration:
     @pytest.fixture
     def setup_app(self):
         """Setup FastAPI app with WebSocket endpoint"""
-        settings = Settings(
+        settings = WSConfig(
             MAX_TOTAL_CONNECTIONS=200000,
             MAX_CONNECTIONS_PER_CLIENT=1000,
             WS_MAX_MESSAGE_SIZE=10 * 1024 * 1024,
         )
 
         # Initialize components
-        backend = MemoryBackend()
-        registry = ConnectionRegistry(backend=backend)
-        manager = ConnectionManager(registry)
+        manager = ConnectionManager(ws_config=settings)
+        backend = manager.backend
 
         # Middleware stack
         middleware_stack = ValidationMiddleware(settings.WS_MAX_MESSAGE_SIZE) | LoggingMiddleware()

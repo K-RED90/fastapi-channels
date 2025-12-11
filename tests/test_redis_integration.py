@@ -8,8 +8,8 @@ from fastapi.testclient import TestClient
 from example.consumers import ChatConsumer
 from example.database import ChatDatabase
 from fastapi_channels.backends import RedisBackend
-from fastapi_channels.config import Settings
-from fastapi_channels.connections import ConnectionManager, ConnectionRegistry
+from fastapi_channels.config import WSConfig
+from fastapi_channels.connections import ConnectionManager
 from fastapi_channels.middleware import LoggingMiddleware, ValidationMiddleware
 
 
@@ -33,7 +33,7 @@ class TestRedisIntegration:
             mock_redis.publish.return_value = 1
             mock_redis.flushdb.return_value = True
 
-            settings = Settings(
+            settings = WSConfig(
                 BACKEND_TYPE="redis",
                 MAX_TOTAL_CONNECTIONS=200000,
                 MAX_CONNECTIONS_PER_CLIENT=1000,
@@ -41,13 +41,8 @@ class TestRedisIntegration:
             )
 
             # Initialize components with Redis backend
-            backend = RedisBackend(
-                redis_url="redis://localhost:6379/0", max_connections=settings.MAX_TOTAL_CONNECTIONS
-            )
-            registry = ConnectionRegistry(backend=backend)
-            manager = ConnectionManager(
-                registry, max_connections_per_client=settings.MAX_CONNECTIONS_PER_CLIENT
-            )
+            manager = ConnectionManager(ws_config=settings)
+            backend = manager.backend
 
             # Middleware stack
             middleware_stack = (

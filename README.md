@@ -4,8 +4,8 @@ A high-performance, distributed WebSocket messaging system built with FastAPI. F
 
 ## Features
 
-- **ChannelLayer API**: Django Channels-like unified interface with singleton pattern for global access
-- **External Event Support**: Send messages from anywhere using `get_channel_layer()` (SQLAlchemy events, Celery tasks, background jobs)
+- **ConnectionManager API**: Unified interface with singleton pattern for global access
+- **External Event Support**: Send messages from anywhere using `get_manager()` (SQLAlchemy events, Celery tasks, background jobs)
 - **WebSocket Connection Management**: Robust connection lifecycle management with heartbeat monitoring and automatic cleanup
 - **Distributed Architecture**: Support for both in-memory (single-server) and Redis-backed (multi-server) deployments
 - **Group Messaging**: Efficient group-based messaging with cross-server support
@@ -30,12 +30,8 @@ graph TB
         EP[WebSocket Endpoints]
     end
 
-    subgraph "Channel Layer"
-        CL[ChannelLayer<br/>Singleton API]
-    end
-
     subgraph "Core Components"
-        CM[ConnectionManager]
+        CM[ConnectionManager<br/>Singleton API]
         CR[ConnectionRegistry]
         CONSUMER[BaseConsumer]
         MW[Middleware Stack]
@@ -62,13 +58,9 @@ graph TB
     end
 
     WS -->|WebSocket Connection| EP
-    EP -->|Connection Lifecycle| CL
+    EP -->|Connection Lifecycle| CM
     EP -->|Message Handling| CONSUMER
-    EXT -->|External Events| CL
-
-    CL -->|Manages| CM
-    CL -->|Manages| CR
-    CL -->|Manages| BB
+    EXT -->|External Events| CM
 
     CM -->|Connection Tracking| CR
     CM -->|Message Routing| BB
@@ -76,7 +68,7 @@ graph TB
 
     CONSUMER -->|Message Processing| MW
     MW -->|Processed Message| CONSUMER
-    CONSUMER -->|Send Messages| CL
+    CONSUMER -->|Send Messages| CM
 
     CR -->|State Management| BB
     BB -->|Implementation| MB
@@ -85,11 +77,10 @@ graph TB
     RB -->|Pub/Sub & Storage| REDIS
     MB -->|In-Memory Storage| MB
 
-    CL -->|Serialization| SERIAL
-    CL -->|Utilities| UTILS
-    CL -->|Configuration| CONFIG
+    CM -->|Serialization| SERIAL
+    CM -->|Utilities| UTILS
+    CM -->|Configuration| CONFIG
 
-    style CL fill:#8B5CF6,stroke:#6B21A8,color:#fff
     style CM fill:#4A90E2,stroke:#2E5C8A,color:#fff
     style CR fill:#4A90E2,stroke:#2E5C8A,color:#fff
     style BB fill:#50C878,stroke:#2E7D4E,color:#fff
@@ -99,14 +90,17 @@ graph TB
 
 ## System Components
 
-### ChannelLayer
+### ConnectionManager
 
-The unified channel layer API providing a Django Channels-like interface for WebSocket connection management. ChannelLayer consolidates config, backend, registry, and manager into a single class, enabling:
-
-- **Singleton Pattern**: Global access via `get_channel_layer()` for external event handling (SQLAlchemy events, Celery tasks, background jobs)
+The central orchestrator for WebSocket connections and unified channel layer API. Provides a Django Channels-like interface with singleton pattern for global access. Manages:
+- Connection establishment and teardown
+- Group membership management
+- Message routing (personal, group, broadcast)
+- Heartbeat monitoring and cleanup
+- Connection limits enforcement
+- Background task coordination (heartbeat, statistics, broadcast)
+- **Singleton Pattern**: Global access via `get_manager()` for external event handling (SQLAlchemy events, Celery tasks, background jobs)
 - **Unified Configuration**: Single point for all WebSocket settings and backend selection
-- **Simplified API**: High-level methods for connection lifecycle, messaging, and group management
-- **External Event Support**: Send messages from anywhere in your application using the global singleton instance
 - **Automatic Backend Selection**: Memory or Redis backend based on configuration
 
 Key methods:
@@ -115,17 +109,6 @@ Key methods:
 - `send_to_user()` - User-specific messaging
 - `broadcast()` - Global messaging
 - `join_group()`/`leave_group()` - Group membership management
-
-### ConnectionManager
-
-The central orchestrator for WebSocket connections. Manages:
-- Connection establishment and teardown
-- Group membership management
-- Message routing (personal, group, broadcast)
-- Heartbeat monitoring and cleanup
-- Connection limits enforcement
-- Background task coordination (heartbeat, statistics, broadcast)
-- Optional toggles for background loops (`log_stats`, `enable_heartbeat`) and auto-generated `server_instance_id` for distributed tracing
 
 ### ConnectionRegistry
 
@@ -235,6 +218,8 @@ MAX_TOTAL_CONNECTIONS=200000
 MAX_TOTAL_GROUPS=5000000
 SERVER_INSTANCE_ID=server-abc123     # Auto-generated if not set
 LOG_LEVEL=INFO
+LOG_STATS=true                       # Enable/disable statistics logging
+WS_ENABLE_HEARTBEAT=true             # Enable/disable heartbeat monitoring
 ```
 
 ## Usage Example
@@ -251,7 +236,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from redis.asyncio import Redis
 
-from fastapi_channels import ChannelLayer, get_channel_layer
+from fastapi_channels import ConnectionManager, get_manager
 from fastapi_channels.config import WSConfig
 from fastapi_channels.exceptions import BaseError
 from fastapi_channels.middleware import LoggingMiddleware, RateLimitMiddleware, ValidationMiddleware
@@ -262,12 +247,12 @@ from example.database import ChatDatabase
 ws_config = WSConfig()
 
 logging.basicConfig(
-    level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO),
+    level=getattr(logging, ws_config.LOG_LEVEL.upper(), logging.INFO),
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 
-# Unified channel layer (automatically selects MemoryBackend or RedisBackend based on config)
-channel_layer = ChannelLayer(config=ws_config)
+# Unified connection manager (automatically selects MemoryBackend or RedisBackend based on config)
+manager = ConnectionManager(ws_config=ws_config)
 
 # Build middleware chain
 middleware = (
@@ -301,9 +286,9 @@ with open(template_path, encoding="utf-8") as f:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown handlers"""
-    await channel_layer.start()
+    await manager.start_tasks()
     yield
-    await channel_layer.stop()
+    await manager.stop_tasks()
     db.close()
 
 
@@ -320,11 +305,11 @@ app.add_middleware(
 
 @app.websocket("/ws/{user_id}")
 async def websocket_endpoint(websocket: WebSocket, user_id: str):
-    connection = await channel_layer.connect(websocket=websocket, user_id=user_id)
+    connection = await manager.connect(websocket=websocket, user_id=user_id)
 
     consumer = ChatConsumer(
         connection=connection,
-        channel_layer=channel_layer,
+        manager=manager,
         middleware_stack=middleware,
         database=db,
     )
@@ -359,8 +344,8 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
 # External event examples (can be called from SQLAlchemy events, Celery tasks, etc.)
 async def send_broadcast_from_external_code(message: str):
     """Send broadcast message from external code (e.g., SQLAlchemy event)"""
-    channel_layer = get_channel_layer()
-    await channel_layer.broadcast({
+    manager = get_manager()
+    await manager.broadcast({
         "type": "announcement",
         "message": message,
         "source": "external_event"
@@ -368,8 +353,8 @@ async def send_broadcast_from_external_code(message: str):
 
 async def send_group_message_from_background_task(group_name: str, data: dict):
     """Send group message from background task (e.g., Celery task)"""
-    channel_layer = get_channel_layer()
-    await channel_layer.send_to_group(group_name, {
+    manager = get_manager()
+    await manager.send_to_group(group_name, {
         "type": "background_update",
         "data": data
     })
@@ -398,12 +383,12 @@ if __name__ == "__main__":
 
 ### Key Features Demonstrated
 
-1. **ChannelLayer API**: Unified channel layer providing Django Channels-like interface with singleton pattern
+1. **ConnectionManager API**: Unified connection manager providing Django Channels-like interface with singleton pattern
 2. **Distributed Backend**: Redis-backed registry/group storage with TTL control (MemoryBackend also available)
 3. **Configuration & Logging**: `WSConfig`-driven configuration plus centralized logging setup
 4. **Middleware Chain**: Validation, logging, and Redis-backed rate limiting with excluded message types
 5. **Structured Error Handling**: `BaseError` flow with `should_disconnect()` and retry-aware responses
-6. **External Event Support**: Global `get_channel_layer()` access for SQLAlchemy events, Celery tasks, and background jobs
+6. **External Event Support**: Global `get_manager()` access for SQLAlchemy events, Celery tasks, and background jobs
 7. **REST Integration**: Message history endpoint (`/api/rooms/{room_name}/messages`) with validation
 8. **Test Endpoints**: REST APIs for broadcasting (`/api/announce`), sending to rooms (`/api/room/{room_name}/message`), users (`/api/user/{user_id}/notification`), and groups (`/api/group/{group_name}/message`)
 9. **Status Monitoring**: Channel layer status endpoint (`/api/status`) for monitoring active connections and backend type
@@ -414,7 +399,7 @@ if __name__ == "__main__":
 
 ## Key Design Decisions
 
-1. **ChannelLayer API**: Provides a Django Channels-like singleton pattern unifying config, backend, registry, and manager into a single interface, enabling external event handling from SQLAlchemy events, Celery tasks, and background jobs via `get_channel_layer()`.
+1. **ConnectionManager API**: Provides a Django Channels-like singleton pattern unifying config, backend, registry, and manager into a single interface, enabling external event handling from SQLAlchemy events, Celery tasks, and background jobs via `get_manager()`.
 
 2. **Backend Abstraction**: The `BaseBackend` interface allows seamless switching between memory and Redis backends without changing application code.
 

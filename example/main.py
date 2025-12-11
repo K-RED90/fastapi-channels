@@ -23,7 +23,7 @@ from example.external_events import (
     send_test_message_to_room,
     send_test_notification_to_user,
 )
-from fastapi_channels import ChannelLayer
+from fastapi_channels import ConnectionManager
 from fastapi_channels.config import WSConfig
 from fastapi_channels.exceptions import BaseError
 from fastapi_channels.middleware import LoggingMiddleware, RateLimitMiddleware, ValidationMiddleware
@@ -35,7 +35,7 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 
-channel_layer = ChannelLayer(config=ws_config)
+manager = ConnectionManager(ws_config=ws_config)
 middleware = (
     ValidationMiddleware(ws_config.WS_MAX_MESSAGE_SIZE)
     >> LoggingMiddleware()
@@ -66,9 +66,9 @@ with open(template_path, encoding="utf-8") as f:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown handlers"""
-    await channel_layer.start()
+    await manager.start_tasks()
     yield
-    await channel_layer.stop()
+    await manager.stop_tasks()
     db.close()
 
 
@@ -85,11 +85,11 @@ app.add_middleware(
 
 @app.websocket("/ws/{user_id}")
 async def websocket_endpoint(websocket: WebSocket, user_id: str):
-    connection = await channel_layer.connect(websocket=websocket, user_id=user_id)
+    connection = await manager.connect(websocket=websocket, user_id=user_id)
 
     consumer = ChatConsumer(
         connection=connection,
-        channel_layer=channel_layer,
+        manager=manager,
         middleware_stack=middleware,
         database=db,
     )
