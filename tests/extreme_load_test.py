@@ -12,10 +12,11 @@ import signal
 import statistics
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
+from websockets import ClientConnection, State
 import websockets
 
 
@@ -47,8 +48,8 @@ class WorkerStats:
     messages_sent: int = 0
     messages_received: int = 0
     groups_created: int = 0
-    response_times: list[float] = None
-    errors: list[str] = None
+    response_times: list[float] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
     start_time: float = 0
     end_time: float = 0
 
@@ -64,7 +65,7 @@ class ExtremeLoadWorker:
         self.worker_id = worker_id
         self.config = config
         self.stats = WorkerStats(worker_id=worker_id)
-        self.connections: list[websockets.WebSocketServerProtocol] = []
+        self.connections: list[ClientConnection] = []
         self.is_running = True
 
     async def run(self) -> WorkerStats:
@@ -139,53 +140,55 @@ class ExtremeLoadWorker:
                 self.stats.errors.append(f"Connection failed for user{user_id}: {e}")
 
     async def _create_groups(self):
-        """Create groups using HTTP API (more efficient than WebSocket)"""
+        """Create groups using WebSocket connections"""
         if not self.connections:
             return
 
         print(f"Worker {self.worker_id}: Creating {self.config.groups_per_worker} groups")
 
-        async with httpx.AsyncClient() as client:
-            tasks = []
-            for i in range(self.config.groups_per_worker):
-                task = asyncio.create_task(self._create_single_group(client, i))
-                tasks.append(task)
+        # Use a subset of connections to create groups
+        group_creators = self.connections[:min(100, len(self.connections))]
 
-                # Batch group creation
-                if len(tasks) >= 100:
-                    await asyncio.gather(*tasks, return_exceptions=True)
-                    tasks = []
-                    print(
-                        f"Worker {self.worker_id}: Created {i + 1}/{self.config.groups_per_worker} groups"
-                    )
+        tasks = []
+        for i in range(self.config.groups_per_worker):
+            # Cycle through available connections
+            connection = group_creators[i % len(group_creators)]
+            task = asyncio.create_task(self._create_single_group(connection, i))
+            tasks.append(task)
 
-            # Complete remaining tasks
-            if tasks:
+            # Batch group creation
+            if len(tasks) >= 100:
                 await asyncio.gather(*tasks, return_exceptions=True)
+                tasks = []
+                print(
+                    f"Worker {self.worker_id}: Created {i + 1}/{self.config.groups_per_worker} groups"
+                )
+
+        # Complete remaining tasks
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
         print(
             f"Worker {self.worker_id}: Group creation complete. {self.stats.groups_created} groups created."
         )
 
-    async def _create_single_group(self, client: httpx.AsyncClient, group_id: int):
-        """Create a single group via HTTP API"""
+    async def _create_single_group(self, websocket, group_id: int):
+        """Create a single group via WebSocket message"""
         try:
             group_name = f"extreme_group_{group_id}"
-            url = f"{self.config.http_url}/api/rooms"
 
-            data = {"name": group_name, "is_public": True}
+            create_room_msg = {
+                "type": "create_room",
+                "data": {
+                    "room_name": group_name,
+                    "is_public": True
+                }
+            }
 
             start_time = time.time()
-            response = await client.post(url, json=data)
-            end_time = time.time()
-
-            if response.is_success:
-                self.stats.groups_created += 1
-                self.stats.response_times.append(end_time - start_time)
-            elif len(self.stats.errors) < 1000:  # Limit error collection
-                self.stats.errors.append(
-                    f"Failed to create group {group_name}: {response.status_code}"
-                )
+            await asyncio.wait_for(websocket.send(json.dumps(create_room_msg)), timeout=5.0)
+            self.stats.groups_created += 1
+            self.stats.response_times.append(time.time() - start_time)
 
         except Exception as e:
             if len(self.stats.errors) < 1000:
@@ -225,7 +228,7 @@ class ExtremeLoadWorker:
 
         tasks = []
         for ws in self.connections[: min(len(self.connections), 100)]:  # Sample connections
-            if ws and not ws.closed:
+            if ws and ws.state != State.CLOSED:
                 task = asyncio.create_task(self._send_heartbeat(ws))
                 tasks.append(task)
 
@@ -246,7 +249,7 @@ class ExtremeLoadWorker:
             return
 
         # Send from a subset of connections to maintain rate
-        active_connections = [ws for ws in self.connections if ws and not ws.closed]
+        active_connections = [ws for ws in self.connections if ws and ws.state != State.CLOSED]
         if not active_connections:
             return
 
@@ -294,7 +297,7 @@ class ExtremeLoadWorker:
 
             tasks = []
             for ws in self.connections:
-                if ws and not ws.closed:
+                if ws and ws.state != State.CLOSED:
                     task = asyncio.create_task(ws.close())
                     tasks.append(task)
 

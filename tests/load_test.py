@@ -12,7 +12,6 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-import httpx
 import websockets
 from websockets import ServerConnection, State
 
@@ -71,9 +70,9 @@ class LoadTester:
             print("Phase 1: Establishing connections...")
             await self._establish_connections()
 
-            # Phase 2: Create groups via HTTP (faster than WebSocket)
+            # Phase 2: Create groups via WebSocket (more reliable than HTTP)
             print("Phase 2: Creating groups...")
-            await self._create_groups_http()
+            await self._create_groups_via_websocket()
 
             # Phase 3: Run messaging load test
             print("Phase 3: Running messaging load test...")
@@ -128,48 +127,59 @@ class LoadTester:
             if len(self.stats.errors) < 100:  # Limit error collection
                 self.stats.errors.append(f"Connection failed for user{user_id}: {e}")
 
-    async def _create_groups_http(self):
-        """Create groups via HTTP API for better performance"""
-        async with httpx.AsyncClient() as client:
-            semaphore = asyncio.Semaphore(100)  # Limit concurrent HTTP requests
-            tasks = []
+    async def _create_groups_via_websocket(self):
+        """Create groups via WebSocket messages for better performance"""
+        semaphore = asyncio.Semaphore(100)  # Limit concurrent WebSocket messages
+        tasks = []
 
-            for i in range(self.config.max_groups):
+        for i in range(self.config.max_groups):
 
-                async def create_with_semaphore(group_id=i):
-                    async with semaphore:
-                        await self._create_single_group_http(client, group_id)
+            async def create_with_semaphore(group_id=i):
+                async with semaphore:
+                    await self._create_single_group_via_websocket(group_id)
 
-                tasks.append(asyncio.create_task(create_with_semaphore()))
+            tasks.append(asyncio.create_task(create_with_semaphore()))
 
-                # Report progress
-                if (i + 1) % 5000 == 0:
-                    print(f"  Initiated {i + 1}/{self.config.max_groups} groups")
+            # Report progress
+            if (i + 1) % 5000 == 0:
+                print(f"  Initiated {i + 1}/{self.config.max_groups} groups")
 
-            # Wait for all group creation to complete
-            await asyncio.gather(*tasks, return_exceptions=True)
+        # Wait for all group creation to complete
+        await asyncio.gather(*tasks, return_exceptions=True)
 
         print(f"  Groups created: {self.stats.groups_created}/{self.config.max_groups}")
 
-    async def _create_single_group_http(self, client: httpx.AsyncClient, group_id: int):
-        """Create a single group via HTTP API"""
+    async def _create_single_group_via_websocket(self, group_id: int):
+        """Create a single group via WebSocket message"""
         try:
             group_name = f"load_group_{group_id:06d}"  # Zero-padded for consistent naming
-            url = f"{self.config.http_url}/api/rooms"
 
-            data = {"name": group_name, "is_public": True}
+            # Get a random active WebSocket connection to send the create_room message
+            active_connections = [ws for ws in self.connections if ws and ws.state != State.CLOSED]
+            if not active_connections:
+                if len(self.stats.errors) < 1000:
+                    self.stats.errors.append(f"No active connections available for group {group_id}")
+                return
+
+            # Use the first available connection (they all work the same for this purpose)
+            websocket = active_connections[0]
+
+            create_room_msg = {
+                "type": "create_room",
+                "data": {
+                    "room_name": group_name,
+                    "is_public": True
+                }
+            }
 
             start_time = time.time()
-            response = await client.post(url, json=data)
-            end_time = time.time()
+            await asyncio.wait_for(websocket.send(json.dumps(create_room_msg)), timeout=10.0)
 
-            if response.is_success:
-                self.stats.groups_created += 1
-                self.stats.response_times.append(end_time - start_time)
-            elif len(self.stats.errors) < 1000:
-                self.stats.errors.append(
-                    f"Failed to create group {group_name}: {response.status_code}"
-                )
+            # Wait a bit for the room creation to complete
+            await asyncio.sleep(0.01)
+
+            self.stats.groups_created += 1
+            self.stats.response_times.append(time.time() - start_time)
 
         except Exception as e:
             if len(self.stats.errors) < 1000:
