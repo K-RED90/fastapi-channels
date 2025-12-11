@@ -4,6 +4,8 @@ A high-performance, distributed WebSocket messaging system built with FastAPI. F
 
 ## Features
 
+- **ChannelLayer API**: Django Channels-like unified interface with singleton pattern for global access
+- **External Event Support**: Send messages from anywhere using `get_channel_layer()` (SQLAlchemy events, Celery tasks, background jobs)
 - **WebSocket Connection Management**: Robust connection lifecycle management with heartbeat monitoring and automatic cleanup
 - **Distributed Architecture**: Support for both in-memory (single-server) and Redis-backed (multi-server) deployments
 - **Group Messaging**: Efficient group-based messaging with cross-server support
@@ -26,6 +28,10 @@ graph TB
     subgraph "Application Layer"
         APP[FastAPI Application]
         EP[WebSocket Endpoints]
+    end
+
+    subgraph "Channel Layer"
+        CL[ChannelLayer<br/>Singleton API]
     end
 
     subgraph "Core Components"
@@ -51,29 +57,39 @@ graph TB
         REDIS[(Redis Server)]
     end
 
+    subgraph "External Code"
+        EXT[SQLAlchemy Events<br/>Celery Tasks<br/>Background Jobs]
+    end
+
     WS -->|WebSocket Connection| EP
-    EP -->|Connection Lifecycle| CM
+    EP -->|Connection Lifecycle| CL
     EP -->|Message Handling| CONSUMER
-    
+    EXT -->|External Events| CL
+
+    CL -->|Manages| CM
+    CL -->|Manages| CR
+    CL -->|Manages| BB
+
     CM -->|Connection Tracking| CR
     CM -->|Message Routing| BB
     CM -->|Background Tasks| CM
-    
+
     CONSUMER -->|Message Processing| MW
     MW -->|Processed Message| CONSUMER
-    CONSUMER -->|Send Messages| CM
-    
+    CONSUMER -->|Send Messages| CL
+
     CR -->|State Management| BB
     BB -->|Implementation| MB
     BB -->|Implementation| RB
-    
+
     RB -->|Pub/Sub & Storage| REDIS
     MB -->|In-Memory Storage| MB
-    
-    CM -->|Serialization| SERIAL
-    CM -->|Utilities| UTILS
-    CM -->|Configuration| CONFIG
-    
+
+    CL -->|Serialization| SERIAL
+    CL -->|Utilities| UTILS
+    CL -->|Configuration| CONFIG
+
+    style CL fill:#8B5CF6,stroke:#6B21A8,color:#fff
     style CM fill:#4A90E2,stroke:#2E5C8A,color:#fff
     style CR fill:#4A90E2,stroke:#2E5C8A,color:#fff
     style BB fill:#50C878,stroke:#2E7D4E,color:#fff
@@ -82,6 +98,23 @@ graph TB
 ```
 
 ## System Components
+
+### ChannelLayer
+
+The unified channel layer API providing a Django Channels-like interface for WebSocket connection management. ChannelLayer consolidates config, backend, registry, and manager into a single class, enabling:
+
+- **Singleton Pattern**: Global access via `get_channel_layer()` for external event handling (SQLAlchemy events, Celery tasks, background jobs)
+- **Unified Configuration**: Single point for all WebSocket settings and backend selection
+- **Simplified API**: High-level methods for connection lifecycle, messaging, and group management
+- **External Event Support**: Send messages from anywhere in your application using the global singleton instance
+- **Automatic Backend Selection**: Memory or Redis backend based on configuration
+
+Key methods:
+- `connect()` - Establish WebSocket connections
+- `send_to_group()` - Group messaging
+- `send_to_user()` - User-specific messaging
+- `broadcast()` - Global messaging
+- `join_group()`/`leave_group()` - Group membership management
 
 ### ConnectionManager
 
@@ -218,10 +251,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from redis.asyncio import Redis
 
-from fastapi_channel.backends.redis import RedisBackend
-from fastapi_channel.config import Settings
-from fastapi_channel.connections.manager import ConnectionManager
-from fastapi_channel.connections.registry import ConnectionRegistry
+from fastapi_channel import ChannelLayer, get_channel_layer
+from fastapi_channel.config import WSConfig
 from fastapi_channel.exceptions import BaseError
 from fastapi_channel.middleware.logging import LoggingMiddleware
 from fastapi_channel.middleware.rate_limit import RateLimitMiddleware
@@ -230,32 +261,15 @@ from example.consumers import ChatConsumer
 from example.database import ChatDatabase
 
 # Load configuration from environment
-settings = Settings()
+settings = WSConfig()
 
 logging.basicConfig(
     level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO),
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 
-# Redis backend for distributed usage (MemoryBackend also available)
-backend = RedisBackend(
-    redis_url=settings.REDIS_URL,
-    registry_expiry=settings.REDIS_REGISTRY_EXPIRY,
-    group_expiry=settings.REDIS_GROUP_EXPIRY,
-)
-
-# Initialize registry and manager
-registry = ConnectionRegistry(
-    backend=backend,
-    max_connections=settings.MAX_TOTAL_CONNECTIONS,
-    heartbeat_timeout=settings.WS_HEARTBEAT_TIMEOUT,
-)
-
-manager = ConnectionManager(
-    registry=registry,
-    max_connections_per_client=settings.MAX_CONNECTIONS_PER_CLIENT,
-    heartbeat_interval=settings.WS_HEARTBEAT_INTERVAL,
-)
+# Unified channel layer (automatically selects MemoryBackend or RedisBackend based on config)
+channel_layer = ChannelLayer(config=settings)
 
 # Build middleware chain
 middleware = (
@@ -289,9 +303,9 @@ with open(template_path, encoding="utf-8") as f:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown handlers"""
-    await manager.start_tasks()
+    await channel_layer.start()
     yield
-    await manager.stop_tasks()
+    await channel_layer.stop()
     db.close()
 
 
@@ -308,11 +322,11 @@ app.add_middleware(
 
 @app.websocket("/ws/{user_id}")
 async def websocket_endpoint(websocket: WebSocket, user_id: str):
-    connection = await manager.connect(websocket=websocket, user_id=user_id)
+    connection = await channel_layer.connect(websocket=websocket, user_id=user_id)
 
     consumer = ChatConsumer(
         connection=connection,
-        manager=manager,
+        channel_layer=channel_layer,
         middleware_stack=middleware,
         database=db,
     )
@@ -336,7 +350,25 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
             await consumer.handle_error(e)
     except Exception:
         await consumer.disconnect(1011)
-        await manager.disconnect(connection.channel_name)
+
+
+# External event examples (can be called from SQLAlchemy events, Celery tasks, etc.)
+async def send_broadcast_from_external_code(message: str):
+    """Send broadcast message from external code (e.g., SQLAlchemy event)"""
+    channel_layer = get_channel_layer()
+    await channel_layer.broadcast({
+        "type": "announcement",
+        "message": message,
+        "source": "external_event"
+    })
+
+async def send_group_message_from_background_task(group_name: str, data: dict):
+    """Send group message from background task (e.g., Celery task)"""
+    channel_layer = get_channel_layer()
+    await channel_layer.send_to_group(group_name, {
+        "type": "background_update",
+        "data": data
+    })
 
 
 @app.get("/api/rooms/{room_name}/messages")
@@ -362,33 +394,39 @@ if __name__ == "__main__":
 
 ### Key Features Demonstrated
 
-1. **Distributed Backend**: Redis-backed registry/group storage with TTL control (MemoryBackend also available)
-2. **Configuration & Logging**: `Settings`-driven configuration plus centralized logging setup
-3. **Middleware Chain**: Validation, logging, and Redis-backed rate limiting with excluded message types
-4. **Structured Error Handling**: `BaseError` flow with `should_disconnect()` and retry-aware responses
-5. **REST Integration**: Message history endpoint (`/api/rooms/{room_name}/messages`) with validation
-6. **Persistence**: Optional SQLite-backed `ChatDatabase` for messages/users/rooms
-7. **Messaging Patterns**: Group, personal, and broadcast messaging via consumer helpers
-8. **Frontend Delivery**: CORS-enabled FastAPI app serving the bundled HTML chat client
-9. **Lifespan Tasks**: Heartbeat/statistics startup & shutdown via FastAPI lifespan handlers
+1. **ChannelLayer API**: Unified channel layer providing Django Channels-like interface with singleton pattern
+2. **Distributed Backend**: Redis-backed registry/group storage with TTL control (MemoryBackend also available)
+3. **Configuration & Logging**: `WSConfig`-driven configuration plus centralized logging setup
+4. **Middleware Chain**: Validation, logging, and Redis-backed rate limiting with excluded message types
+5. **Structured Error Handling**: `BaseError` flow with `should_disconnect()` and retry-aware responses
+6. **External Event Support**: Global `get_channel_layer()` access for SQLAlchemy events, Celery tasks, and background jobs
+7. **REST Integration**: Message history endpoint (`/api/rooms/{room_name}/messages`) with validation
+8. **Test Endpoints**: REST APIs for broadcasting (`/api/announce`), sending to rooms (`/api/room/{room_name}/message`), users (`/api/user/{user_id}/notification`), and groups (`/api/group/{group_name}/message`)
+9. **Status Monitoring**: Channel layer status endpoint (`/api/status`) for monitoring active connections and backend type
+10. **Persistence**: Optional SQLite-backed `ChatDatabase` for messages/users/rooms
+11. **Messaging Patterns**: Group, personal, and broadcast messaging via consumer helpers
+12. **Frontend Delivery**: CORS-enabled FastAPI app serving the bundled HTML chat client
+13. **Lifespan Tasks**: Background tasks startup & shutdown via FastAPI lifespan handlers
 
 ## Key Design Decisions
 
-1. **Backend Abstraction**: The `BaseBackend` interface allows seamless switching between memory and Redis backends without changing application code.
+1. **ChannelLayer API**: Provides a Django Channels-like singleton pattern unifying config, backend, registry, and manager into a single interface, enabling external event handling from SQLAlchemy events, Celery tasks, and background jobs via `get_channel_layer()`.
 
-2. **Distributed State**: Redis backend uses atomic operations (Lua scripts) to ensure consistency across server instances for connection limits and registry updates.
+2. **Backend Abstraction**: The `BaseBackend` interface allows seamless switching between memory and Redis backends without changing application code.
 
-3. **Connection Lifecycle**: Comprehensive lifecycle management with heartbeat monitoring, automatic cleanup, and graceful shutdown.
+3. **Distributed State**: Redis backend uses atomic operations (Lua scripts) to ensure consistency across server instances for connection limits and registry updates.
 
-4. **Middleware Chain**: Chainable middleware pattern allows flexible message processing pipelines.
+4. **Connection Lifecycle**: Comprehensive lifecycle management with heartbeat monitoring, automatic cleanup, and graceful shutdown.
 
-5. **Batch Processing**: Utilities for efficient batch processing of connections to handle large-scale deployments.
+5. **Middleware Chain**: Chainable middleware pattern allows flexible message processing pipelines.
 
-6. **Error Handling**: Structured error responses with context and error codes for better debugging and client handling.
+6. **Batch Processing**: Utilities for efficient batch processing of connections to handle large-scale deployments.
+
+7. **Error Handling**: Structured error responses with context and error codes for better debugging and client handling.
 
 ## Requirements
 
 - Python >= 3.11
 - FastAPI >= 0.124.0
 - Redis >= 7.1.0 (for distributed deployment)
-- Pydantic Settings >= 2.12.0
+- Pydantic Settings >= 2.12.0 (WSConfig)
