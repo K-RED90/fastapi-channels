@@ -7,7 +7,6 @@ from fastapi_channels.consumer.base import BaseConsumer
 from fastapi_channels.typed import Message
 
 if TYPE_CHECKING:
-    from fastapi_channels.channel_layer import ChannelLayer
     from fastapi_channels.connections.manager import ConnectionManager
     from fastapi_channels.connections.state import Connection
     from fastapi_channels.middleware.base import Middleware
@@ -19,8 +18,7 @@ class ChatConsumer(BaseConsumer):
     def __init__(
         self,
         connection: "Connection",
-        manager: "ConnectionManager | None" = None,
-        channel_layer: "ChannelLayer | None" = None,
+        manager: "ConnectionManager",
         middleware_stack: "Middleware | None" = None,
         database: Any = None,
         *args,
@@ -29,7 +27,6 @@ class ChatConsumer(BaseConsumer):
         super().__init__(
             connection,
             manager=manager,
-            channel_layer=channel_layer,
             middleware_stack=middleware_stack,
         )
         # Typing indicators stored in-memory per consumer instance

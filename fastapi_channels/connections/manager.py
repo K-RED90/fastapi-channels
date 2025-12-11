@@ -9,16 +9,21 @@ from typing import TYPE_CHECKING, Any
 from fastapi import WebSocket
 from fastapi.websockets import WebSocketState
 
+from fastapi_channels.backends import MemoryBackend, RedisBackend
+from fastapi_channels.config import WSConfig
 from fastapi_channels.connections.registry import ConnectionRegistry
 from fastapi_channels.connections.state import Connection
 from fastapi_channels.exceptions import ConnectionError, create_error_context
 from fastapi_channels.typed import ConnectionState
-from fastapi_channels.utils import run_with_concurrency_limit
+from fastapi_channels.utils import run_with_concurrency_limit, singleton
 
 if TYPE_CHECKING:
     from fastapi_channels.backends import BaseBackend
 
+_manager_instance: "ConnectionManager | None" = None
 
+
+@singleton
 class ConnectionManager:
     """Central manager for WebSocket connection lifecycle and messaging.
 
@@ -42,27 +47,16 @@ class ConnectionManager:
 
     Parameters
     ----------
-    registry : ConnectionRegistry
-        Registry for tracking active connections
-    max_connections_per_client : int, optional
-        Maximum connections per user. Default: 10000
-    heartbeat_interval : int, optional
-        Heartbeat ping interval in seconds. Default: 30
-    server_instance_id : str | None, optional
-        Unique identifier for this server instance. Auto-generated if not provided.
-        Used for distributed deployment tracking and debugging. Default: None
+    ws_config : WSConfig | None, optional
+        Application configuration. If None, creates config from environment variables.
+        Default: None
 
     Examples
     --------
     Basic setup with memory backend:
 
-    >>> registry = ConnectionRegistry(backend=MemoryBackend())
-    >>> manager = ConnectionManager(
-    ...     registry=registry,
-    ...     max_connections_per_client=5,
-    ...     heartbeat_interval=30
-    ... )
-    >>> await manager.start_tasks()  # Start background tasks
+    >>> manager = ConnectionManager(ws_config=WSConfig(BACKEND_TYPE="memory"))
+    >>> await manager.start()  # Start background tasks
 
     Managing connections:
 
@@ -72,10 +66,11 @@ class ConnectionManager:
 
     Notes
     -----
-    Background tasks must be started with start_tasks() and stopped with stop_tasks().
+    Background tasks must be started with start() and stopped with stop().
     Connection limits are enforced per user to prevent abuse.
     Broadcast functionality requires Redis backend support.
     Server instance ID is automatically added to connection metadata.
+    Creating a ConnectionManager instance automatically sets it as the global singleton.
 
     """
 
@@ -83,26 +78,41 @@ class ConnectionManager:
 
     def __init__(
         self,
-        registry: ConnectionRegistry,
-        max_connections_per_client: int = 10000,
-        heartbeat_interval: int = 30,
-        server_instance_id: str | None = None,
-        log_stats: bool = True,
-        enable_heartbeat: bool = True,
+        ws_config: WSConfig | None = None,
     ):
-        self._registry = registry
+        global _manager_instance
+        if _manager_instance is None:
+            _manager_instance = self
+
+        self._config = ws_config or WSConfig()
+
+        if self._config.BACKEND_TYPE == "redis":
+            self._backend = RedisBackend(
+                redis_url=self._config.REDIS_URL,
+                registry_expiry=self._config.REDIS_REGISTRY_EXPIRY,
+                group_expiry=self._config.REDIS_GROUP_EXPIRY,
+            )
+        else:
+            self._backend = MemoryBackend()
+
+        self._registry = ConnectionRegistry(
+            backend=self._backend,
+            max_connections=self._config.MAX_TOTAL_CONNECTIONS,
+            heartbeat_timeout=self._config.WS_HEARTBEAT_TIMEOUT,
+        )
+
+        self.max_connections_per_client = self._config.MAX_CONNECTIONS_PER_CLIENT
+        self.heartbeat_interval = self._config.WS_HEARTBEAT_INTERVAL
+        self.server_instance_id: str = self._config.SERVER_INSTANCE_ID or self._generate_instance_id()
+        self.log_stats = self._config.LOG_STATS
+        self.enable_heartbeat = self._config.WS_ENABLE_HEARTBEAT
+
         self._receiver_tasks: dict[str, asyncio.Task] = {}
         self._heartbeat_task: asyncio.Task | None = None
         self._stats_task: asyncio.Task | None = None
         self._broadcast_task: asyncio.Task | None = None
         self._running = False
-        self.max_connections_per_client = max_connections_per_client
-        self.heartbeat_interval = heartbeat_interval
         self._broadcast_channel = "__broadcast__"
-
-        self.server_instance_id = server_instance_id or self._generate_instance_id()
-        self.log_stats = log_stats
-        self.enable_heartbeat = enable_heartbeat
 
     @staticmethod
     def _generate_instance_id() -> str:
@@ -111,8 +121,13 @@ class ConnectionManager:
         return f"server-{uuid.uuid4().hex[:12]}"
 
     @property
+    def config(self) -> WSConfig:
+        """Get the WSConfig instance."""
+        return self._config
+
+    @property
     def backend(self) -> "BaseBackend":
-        return self.registry.backend
+        return self._backend
 
     @property
     def registry(self) -> ConnectionRegistry:
@@ -785,3 +800,37 @@ class ConnectionManager:
                 continue
             except Exception:
                 await asyncio.sleep(1)
+
+
+def get_manager() -> ConnectionManager:
+    """Get the global ConnectionManager singleton instance.
+
+    Returns the singleton ConnectionManager instance, creating it if necessary
+    using default config (loaded from environment variables).
+
+    Returns
+    -------
+    ConnectionManager
+        The global ConnectionManager singleton instance
+
+    Examples
+    --------
+    Access from external code:
+
+    >>> from fastapi_channels.connections import get_manager
+    >>> manager = get_manager()
+    >>> await manager.send_group("room:general", {"type": "update"})
+
+    Notes
+    -----
+    The singleton is created on first access if not already initialized.
+    To initialize with custom config, create a ConnectionManager instance first:
+    `ConnectionManager(ws_config=...)` - this automatically sets itself as the singleton.
+
+    """
+    global _manager_instance
+
+    if _manager_instance is None:
+        _manager_instance = ConnectionManager()
+
+    return _manager_instance

@@ -8,6 +8,7 @@ from .batching import (
     run_with_concurrency_limit,
 )
 from .retry import with_retry
+from .singleton import singleton
 
 __all__ = [
     "BatchProcessor",
@@ -16,4 +17,5 @@ __all__ = [
     "process_in_batches",
     "run_with_concurrency_limit",
     "with_retry",
+    "singleton",
 ]

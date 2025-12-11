@@ -7,9 +7,6 @@ from fastapi_channels.exceptions import BaseError, ValidationError, create_error
 from fastapi_channels.middleware import Middleware
 from fastapi_channels.typed import Message, MessagePriority
 
-if TYPE_CHECKING:
-    from fastapi_channels.channel_layer import ChannelLayer
-
 
 class BaseConsumer:
     """Abstract base class for WebSocket consumer implementations.
@@ -34,20 +31,10 @@ class BaseConsumer:
     ----------
     connection : Connection
         WebSocket connection state and metadata
-    manager : ConnectionManager | None, optional
-        Manager for connection lifecycle and messaging. If None, must provide channel_layer.
-        Default: None
-    channel_layer : ChannelLayer | None, optional
-        ChannelLayer instance. If provided, manager is extracted automatically.
-        Default: None
+    manager : ConnectionManager
+        Manager for connection lifecycle and messaging. Required.
     middleware_stack : Middleware | None, optional
         Message processing middleware chain. Default: None
-
-    Notes
-    -----
-    Either `manager` or `channel_layer` must be provided. If both are provided,
-    `manager` takes precedence. If `channel_layer` is provided, the manager
-    is extracted from it automatically.
 
     Examples
     --------
@@ -78,21 +65,14 @@ class BaseConsumer:
     def __init__(
         self,
         connection: Connection,
-        manager: ConnectionManager | None = None,
-        channel_layer: "ChannelLayer | None" = None,
+        manager: ConnectionManager,
         middleware_stack: Middleware | None = None,
     ):
-        if manager is None and channel_layer is None:
-            raise ValueError("Either 'manager' or 'channel_layer' must be provided")
+        if manager is None:
+            raise ValueError("'manager' must be provided")
 
         self.connection = connection
-        if manager is not None:
-            self.manager = manager
-        elif channel_layer is not None:
-            self.manager = channel_layer.manager
-        else:
-            raise ValueError("Either 'manager' or 'channel_layer' must be provided")
-
+        self.manager = manager
         self.middleware_stack = middleware_stack
 
     @abstractmethod

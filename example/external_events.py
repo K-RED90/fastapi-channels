@@ -6,7 +6,7 @@ This module provides utility functions for testing WebSocket functionality
 import asyncio
 from typing import Any
 
-from fastapi_channels import get_channel_layer
+from fastapi_channels import get_manager
 
 
 async def send_broadcast_announcement(message: str) -> None:
@@ -18,9 +18,9 @@ async def send_broadcast_announcement(message: str) -> None:
         Announcement message to broadcast
 
     """
-    channel_layer = get_channel_layer()
+    manager = get_manager()
 
-    await channel_layer.broadcast(
+    await manager.broadcast(
         message={
             "type": "announcement",
             "message": message,
@@ -42,9 +42,9 @@ async def send_test_message_to_room(room_name: str, user_id: str, text: str) -> 
         Message text
 
     """
-    channel_layer = get_channel_layer()
+    manager = get_manager()
 
-    await channel_layer.send_to_group(
+    await manager.send_group(
         group=room_name,
         message={
             "type": "chat_message",
@@ -68,9 +68,9 @@ async def send_test_notification_to_user(user_id: str, message: str) -> None:
         Notification message
 
     """
-    channel_layer = get_channel_layer()
+    manager = get_manager()
 
-    await channel_layer.send_to_user(
+    await manager.send_to_user(
         user_id=user_id,
         message={
             "type": "notification",
@@ -91,9 +91,9 @@ async def send_test_group_message(group_name: str, data: dict[str, Any]) -> None
         Message data to send
 
     """
-    channel_layer = get_channel_layer()
+    manager = get_manager()
 
-    await channel_layer.send_to_group(
+    await manager.send_group(
         group=group_name,
         message={
             "type": "test_group_message",
@@ -113,10 +113,10 @@ def get_channel_layer_status() -> dict[str, Any]:
         Status information including connection counts
 
     """
-    channel_layer = get_channel_layer()
+    manager = get_manager()
 
     return {
         "status": "active",
-        "backend_type": channel_layer.config.BACKEND_TYPE,
+        "backend_type": manager.config.BACKEND_TYPE,
         "timestamp": asyncio.get_event_loop().time(),
     }

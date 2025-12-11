@@ -46,6 +46,9 @@ class WSConfig(BaseSettings):
     WS_RECONNECT_DELAY : int
         Delay in seconds between reconnection attempts. Default: 5
 
+    WS_ENABLE_HEARTBEAT: bool
+        Whether to enable heartbeat. Default: True
+
     MAX_CONNECTIONS_PER_CLIENT : int
         Maximum concurrent connections per user. Default: 1000
 
@@ -61,6 +64,9 @@ class WSConfig(BaseSettings):
 
     LOG_LEVEL : Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
         Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL). Default: "INFO"
+
+    LOG_STATS: bool
+        Whether to log statistics. Default: False
 
     Examples
     --------
@@ -91,6 +97,7 @@ class WSConfig(BaseSettings):
     WS_MAX_MESSAGE_SIZE: int = 10 * 1024 * 1024  # 10MB
     WS_RECONNECT_MAX_ATTEMPTS: int = 5
     WS_RECONNECT_DELAY: int = 5  # seconds
+    WS_ENABLE_HEARTBEAT: bool = True
 
     MAX_CONNECTIONS_PER_CLIENT: int = 1000
     MAX_TOTAL_CONNECTIONS: int = 200000
@@ -99,6 +106,7 @@ class WSConfig(BaseSettings):
     SERVER_INSTANCE_ID: str | None = None
 
     LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
+    LOG_STATS: bool = False
 
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=True)
 
