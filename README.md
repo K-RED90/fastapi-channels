@@ -262,7 +262,7 @@ from example.database import ChatDatabase
 ws_config = WSConfig()
 
 logging.basicConfig(
-    level=getattr(logging, ws_config.LOG_LEVEL.upper(), logging.INFO),
+    level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO),
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 
