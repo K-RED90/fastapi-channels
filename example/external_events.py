@@ -6,7 +6,7 @@ This module provides utility functions for testing WebSocket functionality
 import asyncio
 from typing import Any
 
-from fastapi_channel import get_channel_layer
+from fastapi_channels import get_channel_layer
 
 
 async def send_broadcast_announcement(message: str) -> None:

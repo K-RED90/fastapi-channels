@@ -3,14 +3,14 @@ import base64
 import time
 from typing import TYPE_CHECKING, Any
 
-from fastapi_channel.consumer.base import BaseConsumer
-from fastapi_channel.typed import Message
+from fastapi_channels.consumer.base import BaseConsumer
+from fastapi_channels.typed import Message
 
 if TYPE_CHECKING:
-    from fastapi_channel.channel_layer import ChannelLayer
-    from fastapi_channel.connections.manager import ConnectionManager
-    from fastapi_channel.connections.state import Connection
-    from fastapi_channel.middleware.base import Middleware
+    from fastapi_channels.channel_layer import ChannelLayer
+    from fastapi_channels.connections.manager import ConnectionManager
+    from fastapi_channels.connections.state import Connection
+    from fastapi_channels.middleware.base import Middleware
 
 
 class ChatConsumer(BaseConsumer):

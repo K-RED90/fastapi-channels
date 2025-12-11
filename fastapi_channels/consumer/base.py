@@ -2,13 +2,13 @@ import json
 from abc import abstractmethod
 from typing import TYPE_CHECKING, Any
 
-from fastapi_channel.connections import Connection, ConnectionManager
-from fastapi_channel.exceptions import BaseError, ValidationError, create_error_context
-from fastapi_channel.middleware import Middleware
-from fastapi_channel.typed import Message, MessagePriority
+from fastapi_channels.connections import Connection, ConnectionManager
+from fastapi_channels.exceptions import BaseError, ValidationError, create_error_context
+from fastapi_channels.middleware import Middleware
+from fastapi_channels.typed import Message, MessagePriority
 
 if TYPE_CHECKING:
-    from fastapi_channel.channel_layer import ChannelLayer
+    from fastapi_channels.channel_layer import ChannelLayer
 
 
 class BaseConsumer:

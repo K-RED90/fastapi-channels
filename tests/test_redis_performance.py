@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from fastapi_channel.backends import RedisBackend
+from fastapi_channels.backends import RedisBackend
 
 logger = logging.getLogger(__name__)
 

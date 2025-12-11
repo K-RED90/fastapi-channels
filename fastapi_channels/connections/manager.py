@@ -9,14 +9,14 @@ from typing import TYPE_CHECKING, Any
 from fastapi import WebSocket
 from fastapi.websockets import WebSocketState
 
-from fastapi_channel.connections.registry import ConnectionRegistry
-from fastapi_channel.connections.state import Connection
-from fastapi_channel.exceptions import ConnectionError, create_error_context
-from fastapi_channel.typed import ConnectionState
-from fastapi_channel.utils import run_with_concurrency_limit
+from fastapi_channels.connections.registry import ConnectionRegistry
+from fastapi_channels.connections.state import Connection
+from fastapi_channels.exceptions import ConnectionError, create_error_context
+from fastapi_channels.typed import ConnectionState
+from fastapi_channels.utils import run_with_concurrency_limit
 
 if TYPE_CHECKING:
-    from fastapi_channel.backends import BaseBackend
+    from fastapi_channels.backends import BaseBackend
 
 
 class ConnectionManager:

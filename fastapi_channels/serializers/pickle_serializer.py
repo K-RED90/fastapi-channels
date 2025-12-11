@@ -3,7 +3,7 @@ from __future__ import annotations
 import pickle
 from typing import Any
 
-from fastapi_channel.serializers.base import BaseSerializer
+from fastapi_channels.serializers.base import BaseSerializer
 
 
 class PickleSerializer(BaseSerializer):

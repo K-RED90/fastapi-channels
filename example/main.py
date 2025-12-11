@@ -23,10 +23,10 @@ from example.external_events import (
     send_test_message_to_room,
     send_test_notification_to_user,
 )
-from fastapi_channel import ChannelLayer
-from fastapi_channel.config import WSConfig
-from fastapi_channel.exceptions import BaseError
-from fastapi_channel.middleware import LoggingMiddleware, RateLimitMiddleware, ValidationMiddleware
+from fastapi_channels import ChannelLayer
+from fastapi_channels.config import WSConfig
+from fastapi_channels.exceptions import BaseError
+from fastapi_channels.middleware import LoggingMiddleware, RateLimitMiddleware, ValidationMiddleware
 
 ws_config = WSConfig(BACKEND_TYPE="redis")
 

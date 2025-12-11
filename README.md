@@ -1,6 +1,6 @@
-# FastAPI Channel
+# FastAPI Channels
 
-A high-performance, distributed WebSocket messaging system built with FastAPI. FastAPI Channel provides a robust foundation for real-time applications with support for single-server and multi-server deployments, group messaging, connection management, and extensible middleware.
+A high-performance, distributed WebSocket messaging system built with FastAPI. FastAPI Channels provides a robust foundation for real-time applications with support for single-server and multi-server deployments, group messaging, connection management, and extensible middleware.
 
 ## Features
 

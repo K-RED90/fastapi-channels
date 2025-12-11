@@ -5,13 +5,13 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import WebSocket
 
-from fastapi_channel.backends import MemoryBackend
-from fastapi_channel.connections.state import Connection
-from fastapi_channel.exceptions import ConnectionError
-from fastapi_channel.typed import ConnectionState
+from fastapi_channels.backends import MemoryBackend
+from fastapi_channels.connections.state import Connection
+from fastapi_channels.exceptions import ConnectionError
+from fastapi_channels.typed import ConnectionState
 
 if TYPE_CHECKING:
-    from fastapi_channel.backends import BaseBackend
+    from fastapi_channels.backends import BaseBackend
 
 
 class ConnectionRegistry:
@@ -247,7 +247,7 @@ class ConnectionRegistry:
         ...     await asyncio.gather(*tasks)
 
         """
-        from fastapi_channel.utils import batch_items
+        from fastapi_channels.utils import batch_items
 
         for batch in batch_items(self.connections.values(), batch_size):
             yield batch

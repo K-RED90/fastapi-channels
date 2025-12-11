@@ -8,12 +8,12 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import WebSocket
 
-from fastapi_channel.backends import MemoryBackend, RedisBackend
-from fastapi_channel.config import WSConfig
-from fastapi_channel.connections import Connection, ConnectionManager, ConnectionRegistry
+from fastapi_channels.backends import MemoryBackend, RedisBackend
+from fastapi_channels.config import WSConfig
+from fastapi_channels.connections import Connection, ConnectionManager, ConnectionRegistry
 
 if TYPE_CHECKING:
-    from fastapi_channel.backends import BaseBackend
+    from fastapi_channels.backends import BaseBackend
 
 
 _channel_layer_instance: "ChannelLayer | None" = None
@@ -51,7 +51,7 @@ class ChannelLayer:
 
     Use from external code (e.g., SQLAlchemy event):
 
-    >>> from fastapi_channel import get_channel_layer
+    >>> from fastapi_channels import get_channel_layer
     >>> channel_layer = get_channel_layer()
     >>> await channel_layer.send_to_group("room:general", {"type": "update", "data": {...}})
 
@@ -353,7 +353,7 @@ def get_channel_layer() -> ChannelLayer:
     --------
     Access from external code:
 
-    >>> from fastapi_channel import get_channel_layer
+    >>> from fastapi_channels import get_channel_layer
     >>> channel_layer = get_channel_layer()
     >>> await channel_layer.send_to_group("room:general", {"type": "update"})
 
