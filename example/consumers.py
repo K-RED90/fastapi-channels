@@ -1,6 +1,6 @@
 import asyncio
-import time
 import base64
+import time
 from typing import TYPE_CHECKING, Any
 
 from fastapi_channel.consumer.base import BaseConsumer
@@ -711,7 +711,7 @@ class ChatConsumer(BaseConsumer):
                 filename=filename,
                 mime_type=mime_type,
                 file_size=file_size,
-                file_data=file_data_b64
+                file_data=file_data_b64,
             )
 
         await self.send_to_group(room, file_message)

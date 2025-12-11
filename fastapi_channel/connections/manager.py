@@ -294,8 +294,7 @@ class ConnectionManager:
         if "binary_data" in message:
             binary_data = await asyncio.to_thread(base64.b64decode, message["binary_data"])
             return await self._safe_send_bytes(connection, binary_data)
-        else:
-            return await self._safe_send_json(connection, message)
+        return await self._safe_send_json(connection, message)
 
     async def _safe_close_websocket(self, connection: Connection, code: int = 1000) -> None:
         if connection.websocket.client_state == WebSocketState.CONNECTED:

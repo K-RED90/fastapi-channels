@@ -16,6 +16,7 @@ async def send_broadcast_announcement(message: str) -> None:
     ----------
     message : str
         Announcement message to broadcast
+
     """
     channel_layer = get_channel_layer()
 
@@ -39,6 +40,7 @@ async def send_test_message_to_room(room_name: str, user_id: str, text: str) -> 
         User ID of the sender
     text : str
         Message text
+
     """
     channel_layer = get_channel_layer()
 
@@ -64,6 +66,7 @@ async def send_test_notification_to_user(user_id: str, message: str) -> None:
         User ID to send notification to
     message : str
         Notification message
+
     """
     channel_layer = get_channel_layer()
 
@@ -86,6 +89,7 @@ async def send_test_group_message(group_name: str, data: dict[str, Any]) -> None
         Group name to send message to
     data : dict[str, Any]
         Message data to send
+
     """
     channel_layer = get_channel_layer()
 
@@ -107,6 +111,7 @@ def get_channel_layer_status() -> dict[str, Any]:
     -------
     dict[str, Any]
         Status information including connection counts
+
     """
     channel_layer = get_channel_layer()
 

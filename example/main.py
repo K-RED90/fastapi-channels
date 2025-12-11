@@ -4,7 +4,6 @@ A complete example application demonstrating the websocket chat system
 with an embedded HTML frontend.
 """
 
-import json
 import logging
 import os
 from contextlib import asynccontextmanager

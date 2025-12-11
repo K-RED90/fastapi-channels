@@ -329,7 +329,6 @@ class RedisBackend(BaseBackend):
         Group key gets TTL on first channel addition.
 
         """
-
         group_key = f"{self.channel_prefix}group:{group}"
         redis_client: Any = await self.redis
 
@@ -384,7 +383,6 @@ class RedisBackend(BaseBackend):
         loading all members into memory at once.
 
         """
-
         group_key = f"{self.channel_prefix}group:{group}"
         redis_client: Any = await self.redis
         members = await redis_client.smembers(group_key)
@@ -422,7 +420,6 @@ class RedisBackend(BaseBackend):
         ...         await backend.publish(channel, message)
 
         """
-
         group_key = f"{self.channel_prefix}group:{group}"
         redis_client: Any = await self.redis
         cursor = 0

@@ -37,7 +37,6 @@ def batch_items(
     [(1, 2), (3, 4), (5,)]
 
     """
-
     if batch_size < 1:
         raise ValueError("n must be at least one")
     iterator = iter(items)
