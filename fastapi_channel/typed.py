@@ -1,3 +1,4 @@
+import base64
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -73,6 +74,12 @@ class Message:
     priority: MessagePriority = MessagePriority.NORMAL
     ttl_seconds: float | None = None
     created_at: float = field(default_factory=time.time)
+    binary_data: bytes | None = None
+
+    def __post_init__(self) -> None:
+        """Validate that data and binary_data are mutually exclusive."""
+        if self.data is not None and self.binary_data is not None:
+            raise ValueError("Message cannot have both 'data' and 'binary_data' set")
 
     def is_expired(self) -> bool:
         """Check if message has exceeded its time-to-live.
@@ -102,7 +109,7 @@ class Message:
         Returns
         -------
         dict[str, Any]
-            Dictionary containing all message fields
+            Dictionary containing all message fields. Binary data is base64-encoded.
 
         Examples
         --------
@@ -111,7 +118,7 @@ class Message:
         {'type': 'test', 'data': 'hello', 'sender_id': None, ...}
 
         """
-        return {
+        result = {
             "type": self.type,
             "data": self.data,
             "sender_id": self.sender_id,
@@ -123,6 +130,9 @@ class Message:
             "ttl_seconds": self.ttl_seconds,
             "created_at": self.created_at,
         }
+        if self.binary_data is not None:
+            result["binary_data"] = base64.b64encode(self.binary_data).decode("utf-8")
+        return result
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "Message":
@@ -155,6 +165,10 @@ class Message:
             else MessagePriority.NORMAL
         )
 
+        binary_data = None
+        if "binary_data" in payload:
+            binary_data = base64.b64decode(payload["binary_data"])
+
         return cls(
             type=payload.get("type", "message"),
             data=payload.get("data"),
@@ -164,4 +178,5 @@ class Message:
             priority=priority,
             ttl_seconds=payload.get("ttl_seconds"),
             created_at=payload.get("created_at", time.time()),
+            binary_data=binary_data,
         )

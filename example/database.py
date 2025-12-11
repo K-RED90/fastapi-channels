@@ -26,7 +26,12 @@ class ChatDatabase:
                 username TEXT NOT NULL,
                 text TEXT NOT NULL,
                 timestamp REAL NOT NULL,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                message_type TEXT DEFAULT 'text',
+                filename TEXT,
+                mime_type TEXT,
+                file_size INTEGER,
+                file_data TEXT
             )
         """)
         cursor.execute("""
@@ -75,17 +80,38 @@ class ChatDatabase:
         self.conn.commit()
 
     def save_message(
-        self, room: str, user_id: str, username: str, text: str, timestamp: float
+        self,
+        room: str,
+        user_id: str,
+        username: str,
+        text: str,
+        timestamp: float,
+        message_type: str = "text",
+        filename: str | None = None,
+        mime_type: str | None = None,
+        file_size: int | None = None,
+        file_data: str | None = None,
     ) -> int | None:
         """Save a message to the database"""
         with self.lock:
             cursor = self.conn.cursor()
             cursor.execute(
                 """
-                INSERT INTO messages (room, user_id, username, text, timestamp)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO messages (room, user_id, username, text, timestamp, message_type, filename, mime_type, file_size, file_data)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-                (room, user_id, username, text, timestamp),
+                (
+                    room,
+                    user_id,
+                    username,
+                    text,
+                    timestamp,
+                    message_type,
+                    filename,
+                    mime_type,
+                    file_size,
+                    file_data,
+                ),
             )
             self.conn.commit()
             rowid = cursor.lastrowid
@@ -109,7 +135,7 @@ class ChatDatabase:
             else:
                 cursor.execute(
                     """
-                    SELECT room, user_id, username, text, timestamp
+                    SELECT room, user_id, username, text, timestamp, message_type, filename, mime_type, file_size, file_data
                     FROM messages
                     WHERE room = ?
                     ORDER BY timestamp ASC
@@ -120,16 +146,27 @@ class ChatDatabase:
             rows = cursor.fetchall()
             messages = []
             for row in rows:
-                messages.append(
-                    {
-                        "type": "chat_message",
-                        "room": row["room"],
-                        "user_id": row["user_id"],
-                        "username": row["username"],
-                        "text": row["text"],
-                        "timestamp": row["timestamp"],
-                    }
-                )
+                message_data = {
+                    "type": row["message_type"]
+                    if row["message_type"] != "text"
+                    else "chat_message",
+                    "room": row["room"],
+                    "user_id": row["user_id"],
+                    "username": row["username"],
+                    "text": row["text"],
+                    "timestamp": row["timestamp"],
+                }
+                # Add file data if this is a file message
+                if row["message_type"] == "file":
+                    message_data.update(
+                        {
+                            "filename": row["filename"],
+                            "mime_type": row["mime_type"],
+                            "file_size": row["file_size"],
+                            "file_data": row["file_data"],
+                        }
+                    )
+                messages.append(message_data)
             return messages
 
     def get_recent_messages(self, room: str, limit: int = 50) -> list[dict[str, Any]]:
@@ -138,7 +175,7 @@ class ChatDatabase:
             cursor = self.conn.cursor()
             cursor.execute(
                 """
-                SELECT room, user_id, username, text, timestamp
+                SELECT room, user_id, username, text, timestamp, message_type, filename, mime_type, file_size, file_data
                 FROM messages
                 WHERE room = ?
                 ORDER BY timestamp DESC
@@ -150,16 +187,27 @@ class ChatDatabase:
             rows = cursor.fetchall()
             messages = []
             for row in rows:
-                messages.append(
-                    {
-                        "type": "chat_message",
-                        "room": row["room"],
-                        "user_id": row["user_id"],
-                        "username": row["username"],
-                        "text": row["text"],
-                        "timestamp": row["timestamp"],
-                    }
-                )
+                message_data = {
+                    "type": row["message_type"]
+                    if row["message_type"] != "text"
+                    else "chat_message",
+                    "room": row["room"],
+                    "user_id": row["user_id"],
+                    "username": row["username"],
+                    "text": row["text"],
+                    "timestamp": row["timestamp"],
+                }
+                # Add file data if this is a file message
+                if row["message_type"] == "file":
+                    message_data.update(
+                        {
+                            "filename": row["filename"],
+                            "mime_type": row["mime_type"],
+                            "file_size": row["file_size"],
+                            "file_data": row["file_data"],
+                        }
+                    )
+                messages.append(message_data)
             # Reverse to get chronological order (oldest first)
             messages.reverse()
             return messages

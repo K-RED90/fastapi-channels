@@ -1,4 +1,6 @@
+import asyncio
 import time
+import base64
 from typing import TYPE_CHECKING, Any
 
 from fastapi_channel.consumer.base import BaseConsumer
@@ -37,6 +39,7 @@ class ChatConsumer(BaseConsumer):
         self.max_message_history = 100
         self.max_message_length = 100000  # Support up to 100k characters
         self.max_room_name_length = 50
+        self.max_file_size = 10 * 1024 * 1024  # 10MB file size limit
         self.database = (
             database  # In-memory SQLite database for persistent message and user/room storage
         )
@@ -126,6 +129,8 @@ class ChatConsumer(BaseConsumer):
                 await self.handle_typing_start(message)
             elif msg_type == "typing_stop":
                 await self.handle_typing_stop(message)
+            elif msg_type == "file_message":
+                await self.handle_file_message(message)
             elif msg_type == "ping":
                 await self.handle_ping(message)
             else:
@@ -638,6 +643,78 @@ class ChatConsumer(BaseConsumer):
     async def handle_ping(self, message: Message) -> None:
         """Handle ping message"""
         await self.send_json({"type": "pong", "timestamp": self.timestamp})
+
+    async def handle_file_message(self, message: Message) -> None:
+        """Handle file message"""
+        room = message.data.get("room")
+        filename = message.data.get("filename")
+        mime_type = message.data.get("mime_type")
+        file_size = message.data.get("file_size")
+        file_data_b64 = message.data.get("file_data")
+
+        if not room or not filename or not mime_type or file_size is None or not file_data_b64:
+            await self.send_error("File message incomplete")
+            return
+
+        if len(filename) > 255:  # Reasonable filename length limit
+            await self.send_error("Filename too long")
+            return
+
+        if file_size > self.max_file_size:
+            await self.send_error(f"File too large (max {self.max_file_size} bytes)")
+            return
+
+        if room not in self.connection.groups:
+            await self.send_error(f"Not in room: {room}")
+            return
+
+        try:
+            file_data = await asyncio.to_thread(base64.b64decode, file_data_b64)
+            if len(file_data) != file_size:
+                await self.send_error("File data size mismatch")
+                return
+        except Exception:
+            await self.send_error("Invalid file data")
+            return
+
+        connection_id = self.connection.channel_name
+        user_id = self.connection.user_id or connection_id
+        username = connection_id
+        if self.database:
+            user = self.database.get_user(user_id)
+            if user:
+                username = user["username"]
+
+        timestamp = time.time()
+        file_message = {
+            "type": "file_message",
+            "user_id": user_id,
+            "username": username,
+            "room": room,
+            "filename": filename,
+            "mime_type": mime_type,
+            "file_size": file_size,
+            "file_data": file_data_b64,  # Keep base64 for transmission
+            "timestamp": timestamp,
+        }
+
+        # Store in database
+        if self.database:
+            text_content = f"[File: {filename}]"
+            self.database.save_message(
+                room=room,
+                user_id=user_id,
+                username=username,
+                text=text_content,
+                timestamp=timestamp,
+                message_type="file",
+                filename=filename,
+                mime_type=mime_type,
+                file_size=file_size,
+                file_data=file_data_b64
+            )
+
+        await self.send_to_group(room, file_message)
 
     # Helper methods
 

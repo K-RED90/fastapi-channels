@@ -4,6 +4,7 @@ A complete example application demonstrating the websocket chat system
 with an embedded HTML frontend.
 """
 
+import json
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -98,8 +99,16 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
         await consumer.connect()
 
         while True:
-            raw_message = await websocket.receive_text()
-            await consumer.handle_message(raw_message)
+            message = await websocket.receive()
+            if "text" in message:
+                json_str = message["text"]
+                await consumer.handle_message(json_str=json_str)
+            elif "bytes" in message:
+                binary = message["bytes"]
+                await consumer.handle_message(binary=binary)
+            else:
+                # Unknown message type, skip
+                continue
 
     except WebSocketDisconnect:
         await consumer.disconnect(1000)

@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import contextlib
 import json
 import logging
@@ -208,6 +209,93 @@ class ConnectionManager:
             return False
         except Exception:
             return False
+
+    async def _safe_send_text(self, connection: Connection, text: str) -> bool:
+        """Safely send text message to connection.
+
+        Parameters
+        ----------
+        connection : Connection
+            Target connection
+        text : str
+            Text message to send
+
+        Returns
+        -------
+        bool
+            True if sent successfully, False otherwise
+
+        """
+        if connection.state != ConnectionState.CONNECTED:
+            return False
+        if connection.websocket.client_state != WebSocketState.CONNECTED:
+            return False
+
+        try:
+            await connection.websocket.send_text(text)
+            connection.message_count += 1
+            connection.bytes_sent += len(text.encode())
+            connection.update_activity()
+            return True
+        except RuntimeError:
+            return False
+        except Exception:
+            return False
+
+    async def _safe_send_bytes(self, connection: Connection, data: bytes) -> bool:
+        """Safely send binary message to connection.
+
+        Parameters
+        ----------
+        connection : Connection
+            Target connection
+        data : bytes
+            Binary data to send
+
+        Returns
+        -------
+        bool
+            True if sent successfully, False otherwise
+
+        """
+        if connection.state != ConnectionState.CONNECTED:
+            return False
+        if connection.websocket.client_state != WebSocketState.CONNECTED:
+            return False
+
+        try:
+            await connection.websocket.send_bytes(data)
+            connection.message_count += 1
+            connection.bytes_sent += len(data)
+            connection.update_activity()
+            return True
+        except RuntimeError:
+            return False
+        except Exception:
+            return False
+
+    async def _safe_send_message(self, connection: Connection, message: dict[str, Any]) -> bool:
+        """Safely send message to connection, routing based on content type.
+
+        Parameters
+        ----------
+        connection : Connection
+            Target connection
+        message : dict[str, Any]
+            Message payload. If contains 'binary_data' (base64-encoded), sends as bytes.
+            Otherwise sends as JSON.
+
+        Returns
+        -------
+        bool
+            True if sent successfully, False otherwise
+
+        """
+        if "binary_data" in message:
+            binary_data = await asyncio.to_thread(base64.b64decode, message["binary_data"])
+            return await self._safe_send_bytes(connection, binary_data)
+        else:
+            return await self._safe_send_json(connection, message)
 
     async def _safe_close_websocket(self, connection: Connection, code: int = 1000) -> None:
         if connection.websocket.client_state == WebSocketState.CONNECTED:
@@ -446,7 +534,7 @@ class ConnectionManager:
                 if not message:
                     continue
 
-                if not await self._safe_send_json(connection, message):
+                if not await self._safe_send_message(connection, message):
                     # Send failed, likely connection closed
                     break
             except asyncio.CancelledError:
@@ -667,18 +755,16 @@ class ConnectionManager:
                 if not message:
                     continue
 
-                # Type narrowing: message is guaranteed to be dict[str, Any] here
                 broadcast_message: dict[str, Any] = message
                 dead: list[str] = []
 
                 async def send_to_connection(conn: Connection) -> str | None:
                     """Send message to single connection, return channel_name if failed."""
-                    if not await self._safe_send_json(conn, broadcast_message):
+                    if not await self._safe_send_message(conn, broadcast_message):
                         if conn.state == ConnectionState.CONNECTED:
                             return conn.channel_name
                     return None
 
-                # Process connections in batches to avoid memory spikes
                 async for batch in self.registry.iter_connections(batch_size=100):
                     tasks = [send_to_connection(conn) for conn in batch]
                     results = await run_with_concurrency_limit(
@@ -688,7 +774,6 @@ class ConnectionManager:
                         if isinstance(result, str):
                             dead.append(result)
 
-                # Disconnect failed connections
                 disconnect_tasks = [self.disconnect(channel, code=1011) for channel in dead]
                 if disconnect_tasks:
                     await run_with_concurrency_limit(

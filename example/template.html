@@ -195,6 +195,33 @@
             cursor: not-allowed;
         }
 
+        .btn-secondary {
+            background: var(--bg-input);
+            color: var(--text-secondary);
+            border: 1px solid var(--border-subtle);
+            padding: 10px 12px;
+            border-radius: var(--radius-md);
+            cursor: pointer;
+            font-weight: 500;
+            font-size: 14px;
+            transition: all 0.2s;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+
+        .btn-secondary:hover:not(:disabled) {
+            background: rgba(255,255,255,0.05);
+            border-color: var(--border-active);
+            color: var(--text-primary);
+        }
+
+        .btn-secondary:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
         .auth-box {
             display: flex;
             gap: 8px;
@@ -390,6 +417,59 @@
         .input-wrapper input:focus {
             background: var(--bg-app);
             border-color: var(--border-active);
+        }
+
+        /* --- File Messages --- */
+        .file-message {
+            max-width: 400px;
+        }
+
+        .file-preview {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .file-preview img {
+            border: 1px solid var(--border-subtle);
+            border-radius: var(--radius-md);
+        }
+
+        .file-download {
+            display: flex;
+            align-items: center;
+            padding: 12px;
+            background: rgba(255,255,255,0.02);
+            border-radius: var(--radius-md);
+            border: 1px solid var(--border-subtle);
+        }
+
+        .file-info {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .file-name {
+            font-weight: 500;
+            color: var(--text-primary);
+        }
+
+        .file-link {
+            color: var(--text-accent);
+            text-decoration: none;
+            font-weight: 500;
+        }
+
+        .file-link:hover {
+            text-decoration: underline;
+        }
+
+        .file-size {
+            font-size: 11px;
+            color: var(--text-secondary);
+            font-weight: 400;
         }
 
         /* --- Error Toast --- */
@@ -598,10 +678,20 @@
             <div class="input-area">
                 <div id="errorContainer"></div>
                 <div class="input-wrapper">
-                    <input 
-                        type="text" 
-                        id="messageInput" 
-                        placeholder="Type a message..." 
+                    <input
+                        type="file"
+                        id="fileInput"
+                        style="display: none;"
+                        onchange="handleFileSelect()"
+                        accept="image/*,audio/*,video/*,application/*,text/*"
+                    >
+                    <button class="btn-secondary" onclick="document.getElementById('fileInput').click()" id="fileButton" disabled title="Send file">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14,2 14,8 20,8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10,9 9,9 8,9"></polyline></svg>
+                    </button>
+                    <input
+                        type="text"
+                        id="messageInput"
+                        placeholder="Type a message..."
                         onkeypress="if(event.key==='Enter') sendMessage()"
                         disabled
                         autocomplete="off"
@@ -635,6 +725,7 @@
             statusText: document.getElementById('statusText'),
             msgInput: document.getElementById('messageInput'),
             sendBtn: document.getElementById('sendButton'),
+            fileButton: document.getElementById('fileButton'),
             usernameInput: document.getElementById('usernameInput'),
             messages: document.getElementById('messages'),
             roomNameText: document.getElementById('roomNameText'),
@@ -748,6 +839,7 @@
                 ui.statusText.textContent = 'Disconnected';
                 ui.msgInput.disabled = true;
                 ui.sendBtn.disabled = true;
+                ui.fileButton.disabled = true;
             }
         }
 
@@ -762,6 +854,51 @@
 
             ui.msgInput.value = '';
             clearTypingIndicator();
+        }
+
+        function handleFileSelect() {
+            const fileInput = document.getElementById('fileInput');
+            const file = fileInput.files[0];
+            if (!file || !currentRoom || !ws || ws.readyState !== WebSocket.OPEN) {
+                fileInput.value = ''; // Reset file input
+                return;
+            }
+
+            // Check file size (10MB limit)
+            const maxSize = 10 * 1024 * 1024; // 10MB
+            if (file.size > maxSize) {
+                showError(`File too large. Maximum size is ${Math.round(maxSize / 1024 / 1024)}MB.`);
+                fileInput.value = '';
+                return;
+            }
+
+            // Read file as base64
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const fileData = e.target.result.split(',')[1]; // Remove data URL prefix
+
+                // Send file message
+                ws.send(JSON.stringify({
+                    type: 'file_message',
+                    data: {
+                        room: currentRoom,
+                        filename: file.name,
+                        mime_type: file.type || 'application/octet-stream',
+                        file_size: file.size,
+                        file_data: fileData
+                    }
+                }));
+
+                // Reset file input
+                fileInput.value = '';
+            };
+
+            reader.onerror = function() {
+                showError('Error reading file');
+                fileInput.value = '';
+            };
+
+            reader.readAsDataURL(file);
         }
 
         function createRoom() {
@@ -839,6 +976,10 @@
                     addChatMessage(payload);
                     break;
 
+                case 'file_message':
+                    addChatMessage(payload);
+                    break;
+
                 case 'room_joined':
                     const roomName = payload.room || message.room;
                     currentRoom = roomName;
@@ -848,6 +989,7 @@
                     // Enable chat inputs
                     ui.msgInput.disabled = false;
                     ui.sendBtn.disabled = false;
+                    ui.fileButton.disabled = false;
                     ui.msgInput.focus();
 
                     // Clear messages and add header
@@ -911,11 +1053,11 @@
                 const res = await fetch(`/api/rooms/${encodeURIComponent(roomName)}/messages?limit=50`);
                 if (res.ok) {
                     const data = await res.json();
-                    if (data.messages) {
-                        data.messages.forEach(msg => {
-                            if (msg.type === 'chat_message') addChatMessage(msg);
-                        });
-                    }
+                if (data.messages) {
+                    data.messages.forEach(msg => {
+                        if (msg.type === 'chat_message' || msg.type === 'file_message') addChatMessage(msg);
+                    });
+                }
                 }
             } catch (e) { console.error(e); }
         }
@@ -923,22 +1065,78 @@
         function addChatMessage(data) {
             const isOwn = data.user_id === currentUserId;
             const time = new Date(data.timestamp * 1000).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-            
+
             const div = document.createElement('div');
             div.className = `message ${isOwn ? 'outgoing' : 'incoming'}`;
-            
+
+            let messageContent = '';
+
+            // Handle file messages
+            if (data.type === 'file_message' || (data.filename && data.file_data)) {
+                messageContent = createFileMessageHTML(data);
+            } else {
+                // Regular text message
+                messageContent = `<div class="message-bubble">${escapeHtml(data.text)}</div>`;
+            }
+
             div.innerHTML = `
-                <div class="message-bubble">
-                    ${escapeHtml(data.text)}
-                </div>
+                ${messageContent}
                 <div class="message-meta">
                     ${!isOwn ? `<span class="message-username">${escapeHtml(data.username)}</span>` : ''}
                     <span>${time}</span>
                 </div>
             `;
-            
+
             ui.messages.appendChild(div);
             scrollToBottom();
+        }
+
+        function createFileMessageHTML(data) {
+            const filename = data.filename;
+            const mimeType = data.mime_type;
+            const fileSize = data.file_size;
+            const fileData = data.file_data;
+
+            // Format file size
+            const formatFileSize = (bytes) => {
+                if (bytes === 0) return '0 Bytes';
+                const k = 1024;
+                const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+                const i = Math.floor(Math.log(bytes) / Math.log(k));
+                return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+            };
+
+            // Create blob URL for the file
+            const blob = new Blob([Uint8Array.from(atob(fileData), c => c.charCodeAt(0))], { type: mimeType });
+            const blobUrl = URL.createObjectURL(blob);
+
+            if (mimeType.startsWith('image/')) {
+                // Display images inline
+                return `
+                    <div class="message-bubble file-message">
+                        <div class="file-preview">
+                            <img src="${blobUrl}" alt="${escapeHtml(filename)}" style="max-width: 300px; max-height: 200px; border-radius: 8px; margin-bottom: 8px;">
+                            <div class="file-info">
+                                <span class="file-name">${escapeHtml(filename)}</span>
+                                <span class="file-size">${formatFileSize(fileSize)}</span>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            } else {
+                // Display download link for other files
+                return `
+                    <div class="message-bubble file-message">
+                        <div class="file-download">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 8px;"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14,2 14,8 20,8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10,9 9,9 8,9"></polyline></svg>
+                            <div class="file-info">
+                                <a href="${blobUrl}" download="${filename}" class="file-link">${escapeHtml(filename)}</a>
+                                <span class="file-size">${formatFileSize(fileSize)}</span>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
         }
 
         function addSystemMessage(text) {

@@ -196,28 +196,80 @@ class BaseConsumer:
 
         Notes
         -----
-        Serializes message to JSON before sending.
+        Routes to appropriate WebSocket send method based on message content:
+        - If binary_data is set: uses send_bytes()
+        - If data is set: uses send_json()
         Updates connection statistics (message count, bytes sent).
 
         """
-        await self.connection.websocket.send_json(message.to_dict())
+        if message.binary_data is not None:
+            await self.connection.websocket.send_bytes(message.binary_data)
+            self.connection.message_count += 1
+            self.connection.bytes_sent += len(message.binary_data)
+        else:
+            await self.connection.websocket.send_json(message.to_dict())
+            payload_bytes = json.dumps(message.to_dict()).encode()
+            self.connection.message_count += 1
+            self.connection.bytes_sent += len(payload_bytes)
+        self.connection.update_activity()
 
-    async def send_json(self, data: dict[str, Any]) -> None:
-        """Send raw data as JSON message to the connected client.
+    async def send_text(self, data: str) -> None:
+        """Send plain text message to the connected client.
 
         Parameters
         ----------
-        data : dict[str, Any]
-            Data to send (will be wrapped in Message)
+        data : str
+            Plain text data to send
 
         Notes
         -----
-        Creates Message with type "message" if not specified.
-        Equivalent to send(Message(type="message", data=data)).
+        Sends directly as text, no Message wrapper.
+        Updates connection statistics (message count, bytes sent).
 
         """
-        message = Message(type=data.get("type") or "message", data=data)
-        await self.send(message)
+        await self.connection.websocket.send_text(data)
+        self.connection.message_count += 1
+        self.connection.bytes_sent += len(data.encode())
+        self.connection.update_activity()
+
+    async def send_json(self, data: dict[str, Any] | list) -> None:
+        """Send JSON data to the connected client.
+
+        Parameters
+        ----------
+        data : dict[str, Any] | list
+            JSON-serializable data to send (dict or list)
+
+        Notes
+        -----
+        Sends directly as JSON, no Message wrapper, no string conversion.
+        Updates connection statistics (message count, bytes sent).
+
+        """
+        await self.connection.websocket.send_json(data)
+        payload_bytes = json.dumps(data).encode()
+        self.connection.message_count += 1
+        self.connection.bytes_sent += len(payload_bytes)
+        self.connection.update_activity()
+
+    async def send_bytes(self, data: bytes) -> None:
+        """Send binary data to the connected client.
+
+        Parameters
+        ----------
+        data : bytes
+            Binary data to send
+
+        Notes
+        -----
+        Sends directly as bytes, no Message wrapper.
+        Updates connection statistics (message count, bytes sent).
+
+        """
+        await self.connection.websocket.send_bytes(data)
+        self.connection.message_count += 1
+        self.connection.bytes_sent += len(data)
+        self.connection.update_activity()
 
     async def join_group(self, group: str) -> None:
         """Add connection to a messaging group.
@@ -270,25 +322,26 @@ class BaseConsumer:
         payload = message.to_dict() if isinstance(message, Message) else message
         await self.manager.send_group(group, payload)
 
-    async def handle_message(self, raw_message: str) -> None:
-        """Process raw WebSocket message string.
+    async def handle_message(
+        self,
+        json_str: str | None = None,
+        binary: bytes | None = None,
+    ) -> None:
+        """Process incoming WebSocket message.
 
-        Main entry point for incoming WebSocket messages. Handles:
-        - JSON parsing and validation
-        - Heartbeat ("pong") message processing
-        - Message construction with metadata
-        - Middleware processing
-        - Error handling with structured responses
+        Main entry point for incoming WebSocket messages. Handles JSON string and binary messages.
 
         Parameters
         ----------
-        raw_message : str
-            Raw JSON message string from WebSocket
+        json_str : str | None, optional
+            JSON message as string (will be parsed). Default: None
+        binary : bytes | None, optional
+            Binary message. Default: None
 
         Raises
         ------
         ValidationError
-            If JSON parsing fails or message format is invalid
+            If no parameter provided, multiple parameters provided, or JSON parsing fails
         AuthenticationError
             If message requires authentication
         MessageError
@@ -296,35 +349,33 @@ class BaseConsumer:
 
         Notes
         -----
-        Automatically handles heartbeat messages by updating connection state.
+        Exactly one parameter must be provided.
+        JSON strings are always parsed - message type is determined from parsed JSON.
+        Handles heartbeat ("pong") messages automatically.
         Tracks message statistics (bytes received, activity).
-        Sends error responses directly to client for validation failures.
 
         """
-        try:
-            data = json.loads(raw_message)
-            message_type = data.get("type", "message")
-
-            if message_type == "pong":
-                self.connection.update_heartbeat()
-                return
-
-            priority_value = data.get("priority", MessagePriority.NORMAL.value)
-            priority = (
-                MessagePriority(priority_value)
-                if priority_value in MessagePriority._value2member_map_
-                else MessagePriority.NORMAL
+        provided = sum(1 for param in [json_str, binary] if param is not None)
+        if provided != 1:
+            context = create_error_context(
+                user_id=self.connection.user_id,
+                connection_id=self.connection.channel_name,
+                component="consumer",
             )
+            raise ValidationError(
+                message="Exactly one of 'json_str' or 'binary' must be provided",
+                error_code="INVALID_MESSAGE_PARAMS",
+                context=context,
+            )
+
+        if binary is not None:
             message = Message(
-                type=message_type,
-                data=data.get("data"),
+                type="binary",
+                data=None,
+                binary_data=binary,
                 sender_id=self.connection.channel_name,
-                metadata=data.get("metadata"),
-                ttl_seconds=data.get("ttl_seconds"),
-                priority=priority,
             )
-
-            self.connection.bytes_received += len(raw_message.encode())
+            self.connection.bytes_received += len(binary)
             self.connection.update_activity()
 
             if self.middleware_stack:
@@ -333,20 +384,86 @@ class BaseConsumer:
                     return
 
             await self.receive(message)
+            return
 
-        except json.JSONDecodeError as e:
+        if json_str is not None:
             context = create_error_context(
                 user_id=self.connection.user_id,
                 connection_id=self.connection.channel_name,
                 component="consumer",
             )
-            raise ValidationError(
-                message="Invalid JSON format",
-                error_code="INVALID_JSON",
-                context=context,
-                details={"parse_error": str(e)},
-            ) from e
 
-    async def handle_error(self, error: BaseError) -> None:
+            try:
+                json_data = json.loads(json_str)
+            except json.JSONDecodeError as e:
+                raise ValidationError(
+                    message="Invalid JSON format",
+                    error_code="INVALID_JSON",
+                    context=context,
+                    details={"parse_error": str(e)},
+                ) from e
+
+            if not isinstance(json_data, dict):
+                raise ValidationError(
+                    message="JSON message must be an object with a 'type' field",
+                    error_code="INVALID_MESSAGE_FORMAT",
+                    context=context,
+                    details={"received_type": type(json_data).__name__},
+                )
+
+            if "type" not in json_data:
+                raise ValidationError(
+                    message="JSON message missing required 'type'",
+                    error_code="MISSING_MESSAGE_TYPE",
+                    context=context,
+                    details={"payload_keys": list(json_data.keys())},
+                )
+
+            message_type = json_data["type"]
+            if message_type == "pong":
+                self.connection.update_heartbeat()
+                return
+
+            priority_value = json_data.get("priority", MessagePriority.NORMAL.value)
+            priority = (
+                MessagePriority(priority_value)
+                if priority_value in MessagePriority._value2member_map_
+                else MessagePriority.NORMAL
+            )
+
+            message = Message(
+                type=message_type,
+                data=json_data.get("data"),
+                sender_id=self.connection.channel_name,
+                metadata=json_data.get("metadata"),
+                ttl_seconds=json_data.get("ttl_seconds"),
+                priority=priority,
+            )
+
+            self.connection.bytes_received += len(json_str.encode())
+            self.connection.update_activity()
+
+            if self.middleware_stack:
+                message = await self.middleware_stack(message, self.connection, self)
+                if not message:
+                    return
+
+            await self.receive(message)
+            return
+
+    async def handle_error(self, error: BaseError, as_text: bool = False) -> None:
+        """Handle error and send error response to client.
+
+        Parameters
+        ----------
+        error : BaseError
+            Error to handle
+        as_text : bool, optional
+            If True, send error as plain text. If False, send as JSON. Default: False
+
+        """
         error_response = error.to_response()
-        await self.connection.websocket.send_json(error_response.to_dict())
+        if as_text:
+            await self.send_text(str(error_response.message))
+        else:
+            await self.send_json(error_response.to_dict())
