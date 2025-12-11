@@ -1,7 +1,7 @@
 [project]
-name = "fastapi-channel"
+name = "fastapi-channels"
 version = "0.1.0"
-description = "FastAPI Channel - high-performance, distributed WebSocket messaging"
+description = "FastAPI Channels - high-performance, distributed WebSocket messaging"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -21,7 +21,7 @@ python_functions = "test_*"
 addopts = "-v --tb=short"
 
 [tool.hatch.build.targets.wheel]
-packages = ["fastapi_channel", "example"]
+packages = ["fastapi_channels", "example"]
 
 [tool.ruff]
 line-length = 100

@@ -2,8 +2,8 @@ import logging
 import time
 from typing import TYPE_CHECKING
 
-from fastapi_channel.exceptions import RateLimitError
-from fastapi_channel.middleware import Middleware
+from fastapi_channels.exceptions import RateLimitError
+from fastapi_channels.middleware import Middleware
 
 if TYPE_CHECKING:
     from redis.asyncio import Redis
@@ -258,7 +258,7 @@ class RateLimitMiddleware(Middleware):
 
         key = connection.channel_name
         if not await self._check_rate_limit(key):
-            from fastapi_channel.exceptions import create_error_context
+            from fastapi_channels.exceptions import create_error_context
 
             context = create_error_context(
                 user_id=connection.user_id,

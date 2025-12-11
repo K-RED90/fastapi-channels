@@ -10,10 +10,10 @@ from redis.asyncio import Redis
 
 from example.consumers import ChatConsumer
 from example.database import ChatDatabase
-from fastapi_channel.backends import MemoryBackend, RedisBackend
-from fastapi_channel.config import Settings
-from fastapi_channel.connections import ConnectionManager, ConnectionRegistry
-from fastapi_channel.middleware import LoggingMiddleware, ValidationMiddleware
+from fastapi_channels.backends import MemoryBackend, RedisBackend
+from fastapi_channels.config import Settings
+from fastapi_channels.connections import ConnectionManager, ConnectionRegistry
+from fastapi_channels.middleware import LoggingMiddleware, ValidationMiddleware
 
 
 class TestWebSocketIntegration:

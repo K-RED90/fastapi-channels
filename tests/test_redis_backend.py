@@ -7,7 +7,7 @@ import pytest
 import pytest_asyncio
 from redis.asyncio import Redis
 
-from fastapi_channel.backends import RedisBackend
+from fastapi_channels.backends import RedisBackend
 
 
 @pytest_asyncio.fixture(scope="module")
